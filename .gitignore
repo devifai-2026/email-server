@@ -1,0 +1,33 @@
+# Node modules
+node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# dotenv / secrets
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# MongoDB database files (if local db files are inside project)
+data/
+*.pid
+
+# Coverage reports
+coverage/
+
+# Build outputs
+dist/
+
+# IDE files
+.vscode/
+.idea/
+
+# Optional: Passport session files (if you write to disk)
+sessions/

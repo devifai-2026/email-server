@@ -1,0 +1,372 @@
+const bcrypt = require("bcryptjs");
+const AuthAccount = require("../models/auth.model");
+const User = require("../models/user.model");
+const BulkUpload = require("../models/bulkupload.model");
+const Plan = require("../models/plans.model");
+const generateToken = require("../utils/generateToken");
+const { roles } = require("../utils/config");
+const Otp = require("../models/otp.model");
+const { sendOTP } = require("../utils/mailer");
+
+// Sign up (user only)
+exports.signup = async (req, res) => {
+  try {
+    const { email, password, role } = req.body;
+
+    if (role === roles.ADMIN) {
+      return res.status(403).json({
+        message: "Admin accounts cannot be created via this signup route.",
+      });
+    }
+
+    //  Check if AuthAccount exists
+    let user = await AuthAccount.findOne({ email });
+    if (user) {
+      return res.status(400).json({
+        message: "An account with this email already exists. Please sign in.",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    //  Create AuthAccount
+    user = await AuthAccount.create({
+      email,
+      password: hashedPassword,
+      role: roles.USER,
+    });
+    // we need to create the token after the a
+    const token = generateToken({ id: user._id, role: roles.USER });
+    user = await AuthAccount.findByIdAndUpdate(user._id, {
+      tokens: [{ token }],
+    });
+
+    //  Create linked User profile (only if AuthAccount is new)
+    let userProfile = await User.create({
+      _id: user._id,
+      email: user.email,
+      role: user.role,
+    });
+
+    res.status(201).json({
+      message: "User account created successfully",
+      token,
+      user: userProfile,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Signup Step 2 - Verify OTP and Create Account
+exports.verifySignup = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    //  Use shared OTP function
+    const otpRecord = await verifyOtp(email, otp);
+    const plan = await Plan.findOne({ price: 0 });
+    console.log("Free plan:", plan);
+    if (!plan) {
+      throw new Error("No free plan found");
+    }
+
+    // Set subscription duration (e.g. 30 days from now)
+
+    const now = new Date();
+    const expiry = new Date();
+    expiry.setDate(now.getDate() + plan.duration);
+    // Create AuthAccount
+    const user = await AuthAccount.create({
+      email,
+      password: otpRecord.hashedPassword,
+      role: roles.USER,
+    });
+    const planSnapshot = {
+      id: plan._id.toString(),
+      name: plan.name,
+      price: plan.price,
+      description: plan.description,
+      duration: plan.duration,
+      features: plan.features,
+    };
+
+    // Create linked user profile
+    const userProfile = await User.create({
+      _id: user._id,
+      email: user.email,
+      role: user.role,
+      fullname: otpRecord.fullname,
+      company: otpRecord.company,
+      jobrole: otpRecord.role,
+      currentPlan: planSnapshot,
+      subscription: [
+        {
+          plan: planSnapshot,
+          subscribedAt: now,
+          expiresAt: expiry,
+        },
+      ],
+    });
+
+    // Generate token
+    const token = generateToken({ id: user._id, role: roles.USER });
+
+    // Store token in DB
+    user.tokens = [{ token }];
+    await user.save();
+
+    // Remove OTP record
+    await Otp.deleteOne({ email });
+
+    res.status(201).json({
+      message: "Account created successfully",
+      token,
+      user: userProfile,
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+// Signup Step 1 - Request OTP
+exports.signupRequest = async (req, res) => {
+  try {
+    const { email, role, company, fullname, password } = req.body;
+
+    // Check if email already exists
+    const existingUser = await AuthAccount.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ message: "Account already exists" });
+    }
+
+    // Generate OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Hash password temporarily
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Save OTP + temp signup data in DB
+    await Otp.findOneAndUpdate(
+      { email },
+      {
+        otp,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes
+        hashedPassword,
+        fullname,
+        company,
+        role,
+      },
+      { upsert: true }
+    );
+
+    // Send OTP email
+    await sendOTP(email, otp);
+
+    res.json({ message: "OTP sent to your email" });
+  } catch (err) {
+    console.error("Signup error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Create admin account
+exports.createAdminAccount = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    let user = await AuthAccount.findOne({ email });
+    if (user) {
+      return res
+        .status(400)
+        .json({ message: "Admin with this email already exists" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    user = await AuthAccount.create({
+      email,
+      password: hashedPassword,
+      role: roles.ADMIN,
+    });
+
+    const token = generateToken({ id: user._id, role: roles.USER });
+    user = await AuthAccount.findByIdAndUpdate(user._id, {
+      tokens: [{ token }],
+    });
+
+    //  Create linked User profile (only if AuthAccount is new)
+    await User.create({
+      _id: user._id,
+      email: user.email,
+      role: user.role,
+    });
+
+    res.status(201).json({
+      message: "Admin account created successfully",
+      token,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Sign in
+exports.signin = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await AuthAccount.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ message: "Invalid credentials" });
+    }
+
+    if (user.googleId) {
+      return res.status(400).json({ message: "Please sign in with Google" });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: "Invalid credentials" });
+    }
+
+    // Generate new token
+    const userData = await User.findById(user._id);
+
+    if (userData.role === roles.ADMIN) {
+      const bulkUpload = await BulkUpload.findOne({ status: "processing" });
+      userData.uploadData = bulkUpload;
+    }
+    const token = generateToken({ id: user._id, role: user.role });
+
+    // Save token to DB (optional, if you want to track sessions)
+    user.tokens.push({ token });
+    await user.save();
+
+    // Create session
+    req.session.user = {
+      id: user._id,
+      email: user.email,
+      role: user.role,
+    };
+
+    res.json({
+      message: "Signed in successfully",
+      token,
+      user: userData,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.logout = async (req, res) => {
+  try {
+    // Get token from header or session
+    const token =
+      req.headers.authorization?.replace("Bearer ", "") || req.session?.token;
+    const userId = req.session?.user?.id || req.user?.id;
+
+    if (!token || !userId) {
+      return res.status(401).json({ message: "Not authenticated" });
+    }
+
+    // Remove the current token from tokens array
+    const user = await AuthAccount.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    user.tokens = user.tokens.filter((t) => t.token !== token);
+    await user.save();
+
+    // Destroy session
+    if (req.session) {
+      req.session.destroy(() => {});
+    }
+
+    res.json({ message: "Logged out successfully" });
+  } catch (err) {
+    console.error("Logout error:", err.message);
+    res.status(500).json({ message: "Error logging out" });
+  }
+};
+
+// Step 1: Request Password Reset
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await AuthAccount.findOne({ email });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ message: "No account found with this email" });
+    }
+
+    // Generate OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Save OTP in DB
+    await Otp.findOneAndUpdate(
+      { email },
+      {
+        otp,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes
+      },
+      { upsert: true }
+    );
+
+    // Send OTP via email
+    await sendOTP(email, otp, "reset");
+
+    res.json({ message: "OTP sent to your email for password reset" });
+  } catch (err) {
+    console.error("ForgotPassword error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Step 2: Reset Password
+exports.resetPassword = async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    // Use shared OTP function
+    await verifyOtp(email, otp);
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update AuthAccount password
+    await AuthAccount.findOneAndUpdate(
+      { email },
+      { password: hashedPassword, tokens: [] } // clear old tokens (logout all devices)
+    );
+
+    // Remove OTP record
+    await Otp.deleteOne({ email });
+
+    res.json({ message: "Password reset successfully. Please sign in again." });
+  } catch (err) {
+    console.error("ResetPassword error:", err);
+    res.status(400).json({ message: err.message });
+  }
+};
+
+const verifyOtp = async (email, otp) => {
+  const otpRecord = await Otp.findOne({ email });
+  if (!otpRecord) {
+    throw new Error("OTP not found or expired");
+  }
+
+  if (otpRecord.expiresAt < new Date()) {
+    throw new Error("OTP expired");
+  }
+
+  if (otpRecord.otp !== otp) {
+    throw new Error("Invalid OTP");
+  }
+
+  return otpRecord;
+};
