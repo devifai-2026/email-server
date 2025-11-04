@@ -38,6 +38,22 @@ exports.getEmailAccounts = async (req, res) => {
       filter.domain = { $regex: req.query.domain, $options: "i" };
     }
 
+    if (req.query.isverified) {
+      filter.isverified = req.query.isverified === "true";
+    }
+    if (req.query.companyname) {
+      filter.companyname = { $regex: req.query.companyname, $options: "i" };
+    }
+    if (req.query.name) {
+      filter.name = { $regex: req.query.name, $options: "i" };
+    }
+    if (req.query.website) {
+      filter.website = { $regex: req.query.website, $options: "i" };
+    }
+    if (req.query.role) {
+      filter.role = { $regex: req.query.role, $options: "i" };
+    }
+
     // ✅ Sorting
     const sortField = req.query.sort || "createdAt";
     const sortOrder = req.query.order === "asc" ? 1 : -1;

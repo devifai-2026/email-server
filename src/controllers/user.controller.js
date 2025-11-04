@@ -93,11 +93,11 @@ exports.updateUser = async (req, res) => {
       .status(401)
       .json({ message: "Cannot change role of user or admin" });
   }
-  if (req.body.email) {
-    return res
-      .status(401)
-      .json({ message: "Cannot change email of user or admin" });
-  }
+  // if (req.body.email) {
+  //   return res
+  //     .status(401)
+  //     .json({ message: "Cannot change email of user or admin" });
+  // }
   const user = await User.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
   });

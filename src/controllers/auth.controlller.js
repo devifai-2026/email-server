@@ -221,10 +221,6 @@ exports.signin = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    if (user.googleId) {
-      return res.status(400).json({ message: "Please sign in with Google" });
-    }
-
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: "Invalid credentials" });
@@ -232,6 +228,12 @@ exports.signin = async (req, res) => {
 
     // Generate new token
     const userData = await User.findById(user._id);
+
+    if (!userData.isActive) {
+      return res
+        .status(403)
+        .json({ message: "Account is deactivated. Please contact support." });
+    }
 
     if (userData.role === roles.ADMIN) {
       const bulkUpload = await BulkUpload.findOne({ status: "processing" });
