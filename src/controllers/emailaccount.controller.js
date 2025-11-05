@@ -29,62 +29,61 @@ exports.getEmailAccounts = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    // ✅ Filters
-    const filter = {};
-    if (req.query.email) {
-      filter.email = { $regex: req.query.email, $options: "i" };
-    }
-    if (req.query.domain) {
-      filter.domain = { $regex: req.query.domain, $options: "i" };
+    // ✅ Helper: build OR condition from comma-separated values
+    const buildFieldCondition = (field, value) => {
+      const values = value
+        .split(",")
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0);
+      if (values.length > 0) {
+        return { $or: values.map((v) => ({ [field]: new RegExp(v, "i") })) };
+      }
+      return null;
+    };
+
+    // ✅ Build filters
+    const andConditions = [];
+
+    const fields = [
+      "email",
+      "domain",
+      "companyname",
+      "name",
+      "website",
+      "role",
+    ];
+
+    fields.forEach((f) => {
+      if (req.query[f]) {
+        const cond = buildFieldCondition(f, req.query[f]);
+        if (cond) andConditions.push(cond);
+      }
+    });
+
+    // ✅ Boolean filter for verified
+    if (req.query.isverified) {
+      andConditions.push({
+        isverified: req.query.isverified === "true",
+      });
     }
 
-    if (req.query.isverified) {
-      filter.isverified = req.query.isverified === "true";
-    }
-    if (req.query.companyname) {
-      filter.companyname = { $regex: req.query.companyname, $options: "i" };
-    }
-    if (req.query.name) {
-      filter.name = { $regex: req.query.name, $options: "i" };
-    }
-    if (req.query.website) {
-      filter.website = { $regex: req.query.website, $options: "i" };
-    }
-    if (req.query.role) {
-      filter.role = { $regex: req.query.role, $options: "i" };
-    }
+    const filter = andConditions.length > 0 ? { $and: andConditions } : {};
 
     // ✅ Sorting
     const sortField = req.query.sort || "createdAt";
     const sortOrder = req.query.order === "asc" ? 1 : -1;
     const sort = { [sortField]: sortOrder };
 
-    // ✅ Fetch accounts
+    // ✅ Fetch data
     const [accounts, total] = await Promise.all([
       EmailAccount.find(filter).sort(sort).skip(skip).limit(limit),
       EmailAccount.countDocuments(filter),
     ]);
 
-    // ✅ Check auth + subscription status
+    // ✅ Check auth/subscription
     const isAuthenticated = !!req.user;
     const isSubscribed =
       isAuthenticated && req.user?.subscription?.expiresAt > new Date();
-
-    // ✅ Mask or show full data
-    const finalData = accounts.map((acc) => {
-      if (isAuthenticated && isSubscribed) {
-        // full data
-        return acc;
-      } else {
-        // masked data
-        return {
-          _id: acc._id,
-          email: maskEmail(acc.email),
-          domain: acc.domain,
-          createdAt: acc.createdAt,
-        };
-      }
-    });
 
     res.status(200).json({
       success: true,
@@ -96,6 +95,7 @@ exports.getEmailAccounts = async (req, res) => {
       data: accounts,
     });
   } catch (err) {
+    console.error("getEmailAccounts error:", err);
     res.status(500).json({
       success: false,
       message: err.message || "Failed to fetch email accounts",
