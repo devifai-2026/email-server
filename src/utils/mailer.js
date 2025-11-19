@@ -165,7 +165,7 @@ exports.sendSubscriptionSuccessEmail = async (
   paymentMethod,
   transactionId
 ) => {
-  const subject = "🎉 Welcome Aboard – Subscription Activated!";
+  const subject = "🎉 Welcome - subscription activated!";
   const text = `Hi ${fullname}, your subscription to the ${packageName} plan has been successfully activated. Enjoy all the premium features of Reach Finder.`;
 
   const baseStyle = `
