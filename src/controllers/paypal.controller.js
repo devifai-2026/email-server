@@ -132,16 +132,22 @@ exports.captureOrder = async (req, res) => {
     };
 
     await user.save();
-    await sendSubscriptionSuccessEmail(
-      user.email,
-      user.fullname || user.email,
-      plan.name
-    );
 
     res.status(200).json({
       message: "Payment successful",
       data: { captureData, subscription: user.subscription },
     });
+    await sendSubscriptionSuccessEmail(
+      user.email,
+      user.fullname || user.email,
+      plan.name,
+      plan.price,
+
+      captureData.purchase_units?.[0]?.amount?.currency_code || "USD",
+      captureData.status?.toLowerCase() || "completed",
+      "PayPal",
+      captureData.id
+    );
   } catch (error) {
     console.error("Capture error:", error.message);
     res

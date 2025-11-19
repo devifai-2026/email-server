@@ -2,7 +2,9 @@
 const nodemailer = require("nodemailer");
 
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.hostinger.com",
+  port: process.env.PORT_HOSTINGER,
+
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
@@ -153,7 +155,16 @@ exports.sendSubscriptionEmail = async (email, fullname, type = "expiring") => {
 /**
  * ✅ Subscription Success Email with Package Info
  */
-exports.sendSubscriptionSuccessEmail = async (email, fullname, packageName) => {
+exports.sendSubscriptionSuccessEmail = async (
+  email,
+  fullname,
+  packageName,
+  price,
+  currency,
+  status,
+  paymentMethod,
+  transactionId
+) => {
   const subject = "🎉 Welcome Aboard – Subscription Activated!";
   const text = `Hi ${fullname}, your subscription to the ${packageName} plan has been successfully activated. Enjoy all the premium features of Reach Finder.`;
 
@@ -192,30 +203,106 @@ exports.sendSubscriptionSuccessEmail = async (email, fullname, packageName) => {
   `;
 
   const html = `
-    <div style="${baseStyle}">
-      <div style="${cardStyle}">
-        <h2 style="color:#16A34A;">🎉 Subscription Activated!</h2>
-        <p>Hi <b>${fullname}</b>,</p>
-        <p>Your subscription has been successfully <b>activated</b>.</p>
-        
-        <div style="${packageStyle}">
-          📦 Plan: ${packageName}
-        </div>
+  <div style="${baseStyle}">
+    <div style="
+      max-width: 650px;
+      margin: 0 auto;
+      background-color: #ffffff;
+      border-radius: 12px;
+      padding: 32px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #1f2937;
+    ">
 
-        <p style="margin-top: 16px;">
-          You now have access to all premium features of <b>Reach Finder</b>.
-        </p>
+      <!-- HEADER -->
+      <h1 style="color: #2563eb; text-align:center; margin-bottom: 8px;">Reach Finder</h1>
+      <p style="text-align:center; color:#6b7280; margin-top:0;">Official Invoice & Payment Confirmation</p>
 
-        <a href="${process.env.CLIENT_URL || "#"}" style="${btnStyle}">
-          Explore Premium Features 🚀
+      <hr style="margin: 24px 0; border: 0; height: 1px; background-color: #e5e7eb;" />
+
+      <!-- CUSTOMER INFO -->
+      <h3 style="margin-bottom: 6px;">Billed To:</h3>
+      <p style="margin:0; font-size:14px;">
+        <b>${fullname}</b><br/>
+        ${email}
+      </p>
+
+      <br/>
+
+      <!-- INVOICE SUMMARY -->
+      <table style="width:100%; border-collapse: collapse; margin-top: 16px;">
+        <tr>
+          <td style="padding: 10px; background:#f9fafb; font-weight:600;">Invoice Date</td>
+          <td style="padding: 10px; text-align:right;">${new Date().toLocaleDateString()}</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px; background:#f9fafb; font-weight:600;">Payment Method</td>
+          <td style="padding: 10px; text-align:right;">${paymentMethod}</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px; background:#f9fafb; font-weight:600;">Transaction ID</td>
+          <td style="padding: 10px; text-align:right;">${transactionId}</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px; background:#f9fafb; font-weight:600;">Status</td>
+          <td style="padding: 10px; text-align:right; color:#16A34A; font-weight:bold;">${status}</td>
+        </tr>
+      </table>
+
+      <br/>
+
+      <!-- PLAN DETAILS -->
+      <h3 style="margin-top: 30px;">Subscription Details</h3>
+      <table style="width:100%; border-collapse: collapse; margin-top: 8px;">
+        <thead>
+          <tr style="background:#2563eb; color:white;">
+            <th style="padding: 12px; text-align:left;">Plan</th>
+            <th style="padding: 12px; text-align:right;">Price</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="background:#f3f4f6;">
+            <td style="padding: 12px;">${packageName}</td>
+            <td style="padding: 12px; text-align:right;">${price} ${currency}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <br/>
+
+      <!-- TOTAL -->
+      <table style="width:100%; margin-top: 18px;">
+        <tr>
+          <td style="font-size: 18px; font-weight:600;">Total Paid:</td>
+          <td style="font-size: 18px; font-weight:700; text-align:right; color:#2563eb;">
+            ${price} ${currency}
+          </td>
+        </tr>
+      </table>
+
+      <hr style="margin: 28px 0; border: 0; height: 1px; background-color: #e5e7eb;" />
+
+      <!-- CTA -->
+      <div style="text-align:center;">
+        <a href="${process.env.CLIENT_URL || "#"}" 
+          style="
+            ${btnStyle};
+            background-color:#2563eb;
+            font-size:16px;
+          ">
+          Go to Dashboard 🚀
         </a>
-
-        <p style="color:#6b7280; margin-top: 12px;">
-          Thank you for trusting us. Let’s grow together!
-        </p>
       </div>
+
+
+
+      <p style="text-align:center; color:#6b7280; margin-top:18px;">
+        Thank you for your purchase! We're excited to have you with us.
+      </p>
     </div>
-  `;
+  </div>
+`;
 
   return exports.sendEmail({ to: email, subject, text, html });
 };
