@@ -24,10 +24,23 @@ const maskEmail = (email) => {
 
 exports.getEmailAccounts = async (req, res) => {
   try {
+    console.log('Query parameters received:', req.query);
+    
     // ✅ Pagination
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
+
+    // ✅ Sorting - Support both frontend and backend parameter names
+    const sortField = req.query.sortname || req.query.sort || "createdAt";
+    const sortOrder = req.query.sortype === "asc" || req.query.order === "asc" ? 1 : -1;
+    const sort = { [sortField]: sortOrder };
+
+    console.log('Sorting configuration:', {
+      sortField,
+      sortOrder,
+      sortObject: sort
+    });
 
     // ✅ Helper: build OR condition from comma-separated values
     const buildFieldCondition = (field, value) => {
@@ -60,6 +73,23 @@ exports.getEmailAccounts = async (req, res) => {
       }
     });
 
+    // Handle individual filter parameters from frontend
+    if (req.query.name) {
+      andConditions.push({ name: new RegExp(req.query.name, "i") });
+    }
+    if (req.query.email) {
+      andConditions.push({ email: new RegExp(req.query.email, "i") });
+    }
+    if (req.query.companyname) {
+      andConditions.push({ companyname: new RegExp(req.query.companyname, "i") });
+    }
+    if (req.query.website) {
+      andConditions.push({ website: new RegExp(req.query.website, "i") });
+    }
+    if (req.query.role) {
+      andConditions.push({ role: new RegExp(req.query.role, "i") });
+    }
+
     // ✅ Boolean filter for verified
     if (req.query.isverified) {
       andConditions.push({
@@ -69,10 +99,8 @@ exports.getEmailAccounts = async (req, res) => {
 
     const filter = andConditions.length > 0 ? { $and: andConditions } : {};
 
-    // ✅ Sorting
-    const sortField = req.query.sort || "createdAt";
-    const sortOrder = req.query.order === "asc" ? 1 : -1;
-    const sort = { [sortField]: sortOrder };
+    console.log('Final filter:', JSON.stringify(filter, null, 2));
+    console.log('Final sort:', sort);
 
     // ✅ Fetch data
     const [accounts, total] = await Promise.all([

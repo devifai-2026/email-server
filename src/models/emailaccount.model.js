@@ -4,7 +4,6 @@ const emailAccountSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
     role: { type: String },
-
     location: { type: String },
     industry: { type: String },
     size: { type: String },
@@ -18,8 +17,12 @@ const emailAccountSchema = new mongoose.Schema(
     linkedin: { type: String },
     isverified: { type: Boolean, default: true },
     emaildata: { type: Object },
+    bulkUploadId: { type: mongoose.Schema.Types.ObjectId, ref: "BulkUpload" } // Added missing field
   },
   { timestamps: true }
 );
+
+// Create index - this should be done after schema definition
+emailAccountSchema.index({ email: 1 }, { unique: true });
 
 module.exports = mongoose.model("EmailAccount", emailAccountSchema);
