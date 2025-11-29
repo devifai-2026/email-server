@@ -10,6 +10,7 @@ const {
 
   bulkDeleteEmailAccounts,
   getMaskedAccounts,
+  deleteDuplicateEmailAccounts,
 } = require("../controllers/emailaccount.controller");
 
 router.get("/maskedEmailAccounts", getMaskedAccounts);
@@ -20,5 +21,6 @@ router.post("/", protect, adminOnly, createEmailAccount);
 router.put("/:id", protect, adminOnly, updateEmailAccount);
 router.delete("/:id", protect, adminOnly, deleteEmailAccount);
 router.post("/bulk-delete", protect, adminOnly, bulkDeleteEmailAccounts);
+router.post("/prevent-duplicate", deleteDuplicateEmailAccounts);
 
 module.exports = router;

@@ -328,3 +328,98 @@ exports.bulkDeleteEmailAccounts = async (req, res) => {
     res.status(500).json({ message: "Error deleting records" });
   }
 };
+
+
+
+// DELETE duplicate email accounts, keep the first created one
+
+exports.deleteDuplicateEmailAccounts = async (req, res) => {
+  try {
+    let totalDeleted = 0;
+    let totalProcessed = 0;
+    const batchSize = 5000;
+    let skip = 0;
+    let hasMore = true;
+
+    console.log("Starting batch duplicate deletion process...");
+
+    while (hasMore) {
+      // Fetch batch of 500 records
+      const batch = await EmailAccount.find({})
+        .sort({ createdAt: 1 }) // Process oldest first
+        .skip(skip)
+        .limit(batchSize)
+        .select('_id email createdAt')
+        .lean();
+
+      if (batch.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      console.log(`Processing batch ${skip / batchSize + 1} with ${batch.length} records`);
+
+      // Group current batch by email to find duplicates within this batch
+      const emailGroups = {};
+      
+      // Group records by email
+      batch.forEach(record => {
+        if (!emailGroups[record.email]) {
+          emailGroups[record.email] = [];
+        }
+        emailGroups[record.email].push(record);
+      });
+
+      // Process duplicates within this batch
+      const deletionPromises = [];
+      let batchDeleted = 0;
+
+      for (const [email, records] of Object.entries(emailGroups)) {
+        // If multiple records with same email in this batch
+        if (records.length > 1) {
+          // Sort by creation date (oldest first)
+          records.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+          
+          // Keep the oldest, delete the rest from this batch
+          const idsToDelete = records.slice(1).map(record => record._id);
+          
+          if (idsToDelete.length > 0) {
+            deletionPromises.push(
+              EmailAccount.deleteMany({ _id: { $in: idsToDelete } })
+                .then(result => {
+                  batchDeleted += result.deletedCount;
+                })
+                .catch(err => {
+                  console.error(`Error deleting duplicates for email ${email}:`, err);
+                })
+            );
+          }
+        }
+      }
+
+      // Wait for all deletions in current batch to complete
+      if (deletionPromises.length > 0) {
+        await Promise.all(deletionPromises);
+        totalDeleted += batchDeleted;
+      }
+
+      totalProcessed += batch.length;
+      skip += batchSize;
+
+      console.log(`Batch ${skip / batchSize} completed: Processed ${batch.length} records, deleted ${batchDeleted} duplicates`);
+      
+      // Add small delay between batches to prevent overwhelming the database
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    res.json({
+      message: `Successfully processed ${totalProcessed} records and deleted ${totalDeleted} duplicate email account(s)`,
+      totalProcessed,
+      totalDeleted
+    });
+
+  } catch (err) {
+    console.error("Delete duplicates error:", err);
+    res.status(500).json({ message: "Error deleting duplicate records" });
+  }
+};
