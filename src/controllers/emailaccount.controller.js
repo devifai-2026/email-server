@@ -143,104 +143,104 @@ exports.getMaskedAccounts = async (req, res) => {
       website,
       role,
       isverified,
+      page = 1
     } = req.query;
 
     const MAX_TOTAL = 25;
     const NORMAL_LIMIT = 10;
-    const MASKED_LIMIT = 15;
+    const skip = (page - 1) * MAX_TOTAL;
 
-    console.log("Query params:", req.query);
+    console.time("QueryExecution");
 
+    // Build efficient query
     const query = {};
-
-    // Helper to convert comma-separated search string to RegExp OR query
-    const buildFieldCondition = (field, value) => {
-      const values = value
-        .split(",")
-        .map((v) => v.trim())
-        .filter((v) => v.length > 0);
-
-      if (values.length > 0) {
-        return { $or: values.map((v) => ({ [field]: new RegExp(v, "i") })) };
-      }
-      return null;
-    };
-
-    // Build OR groups for search
-    const orGroups = [];
-
+    const searchTerms = [];
+    
+    // For exact email matches (uses email_1 index)
     if (email) {
-      const emailCond = buildFieldCondition("email", email);
-      if (emailCond) orGroups.push(emailCond.$or);
+      const emails = email.split(',').map(e => e.trim()).filter(e => e);
+      if (emails.length === 1) {
+        // Exact match for single email
+        query.email = { $regex: emails[0], $options: 'i' };
+      } else if (emails.length > 1) {
+        // Multiple emails
+        query.email = { $in: emails.map(e => new RegExp(e, 'i')) };
+      }
     }
-
+    
+    // For company name (uses companyname_1 index)
     if (companyname) {
-      const companyCond = buildFieldCondition("companyname", companyname);
-      if (companyCond) orGroups.push(companyCond.$or);
+      const companies = companyname.split(',').map(c => c.trim()).filter(c => c);
+      if (companies.length > 0) {
+        query.companyname = { $in: companies.map(c => new RegExp(c, 'i')) };
+      }
     }
+    
+    // Add other filters
+    if (isverified === 'true') query.isverified = true;
 
-    if (name) {
-      const nameCond = buildFieldCondition("name", name);
-      if (nameCond) orGroups.push(nameCond.$or);
-    }
+    // Determine which index to use for sorting
+    let hintIndex = null;
+    if (sort === 'email') hintIndex = 'email_1';
+    else if (sort === 'companyname') hintIndex = 'companyname_1';
+    else if (sort === 'name') hintIndex = 'name_1';
+    else if (sort === 'createdAt') hintIndex = 'createdAt_1';
 
-    if (website) {
-      const websiteCond = buildFieldCondition("website", website);
-      if (websiteCond) orGroups.push(websiteCond.$or);
-    }
+    // Query with timeout
+    const [allResults, totalCount] = await Promise.all([
+      EmailAccount.find(query)
+        .sort({ [sort]: order === "asc" ? 1 : -1 })
+        .skip(skip)
+        .limit(MAX_TOTAL)
+        .maxTimeMS(5000) // 5 second timeout
+        .hint(hintIndex) // Force index usage
+        .lean()
+        .exec(),
+      
+      EmailAccount.countDocuments(query)
+        .maxTimeMS(3000)
+        .exec()
+    ]);
 
-    if (role) {
-      const roleCond = buildFieldCondition("role", role);
-      if (roleCond) orGroups.push(roleCond.$or);
-    }
+    // Process results
+    const normalEmails = allResults.slice(0, NORMAL_LIMIT);
+    const maskedEmailsRaw = allResults.slice(NORMAL_LIMIT, MAX_TOTAL);
 
-    // Merge OR groups into AND structure
-    if (orGroups.length > 0) {
-      query.$and = orGroups.map((group) => ({ $or: group }));
-    }
-
-    if (isverified) query.isverified = true;
-
-    //  Fetch normal emails (limit 10)
-    const normalEmails = await EmailAccount.find(query)
-      .sort({ [sort]: order === "asc" ? 1 : -1 })
-      .limit(NORMAL_LIMIT);
-
-    //  Fetch masked emails (limit 15)
-    const maskedEmailsRaw = await EmailAccount.find(query)
-      .sort({ [sort]: order === "asc" ? 1 : -1 })
-      .skip(NORMAL_LIMIT) // skip first 10 so we don’t get duplicates
-      .limit(MASKED_LIMIT);
-
-    // Mask the email field (e.g. johndoe@example.com → joh***@example.com)
-
-    const maskedEmails = maskedEmailsRaw.map((item) => ({
-      ...item.toObject(),
+    const maskedEmails = maskedEmailsRaw.map(item => ({
+      ...item,
       email: maskEmail(item.email),
       masked: true,
     }));
 
-    // Merge both results
-    const allResults = [...normalEmails, ...maskedEmails];
+    const finalResults = [...normalEmails, ...maskedEmails];
+    const totalPages = Math.ceil(totalCount / MAX_TOTAL);
 
-    // Count total matching documents
-    const totalCount = await EmailAccount.countDocuments(query);
-    const count = await EmailAccount.countDocuments(query);
-    const totalPages = Math.ceil(count / 25);
+    console.timeEnd("QueryExecution");
+    console.log(`Found ${totalCount} records in query`);
 
     res.json({
-      data: allResults,
+      data: finalResults,
       total: totalCount,
-      returned: allResults.length,
+      returned: finalResults.length,
       normalCount: normalEmails.length,
       maskedCount: maskedEmails.length,
-      page: 1,
+      page: parseInt(page),
       totalPages,
       limit: MAX_TOTAL,
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Error fetching data" });
+    console.error("Error in getMaskedAccounts:", err);
+    
+    if (err.name === 'MongoServerError' && err.code === 50) {
+      return res.status(408).json({ 
+        message: "Query timeout. Try a more specific search." 
+      });
+    }
+    
+    res.status(500).json({ 
+      message: "Error fetching data",
+      error: err.message 
+    });
   }
 };
 
