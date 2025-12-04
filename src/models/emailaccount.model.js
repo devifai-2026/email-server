@@ -1,4 +1,3 @@
-// In your EmailAccount model file (models/EmailAccount.js or similar)
 const mongoose = require("mongoose");
 
 const emailAccountSchema = new mongoose.Schema(
@@ -18,18 +17,12 @@ const emailAccountSchema = new mongoose.Schema(
     linkedin: { type: String },
     isverified: { type: Boolean, default: true },
     emaildata: { type: Object },
-    bulkUploadId: { type: mongoose.Schema.Types.ObjectId, ref: "BulkUpload" }
+    bulkUploadId: { type: mongoose.Schema.Types.ObjectId, ref: "BulkUpload" } // Added missing field
   },
   { timestamps: true }
 );
 
-// Create indexes in schema definition too
+// Create index - this should be done after schema definition
 emailAccountSchema.index({ email: 1 }, { unique: true });
-emailAccountSchema.index({ companyname: 1 });
-emailAccountSchema.index({ name: 1 });
-emailAccountSchema.index({ createdAt: 1 });
-emailAccountSchema.index({ bulkUploadId: 1 });
-emailAccountSchema.index({ isverified: 1 });
-emailAccountSchema.index({ bulkUploadId: 1, createdAt: -1 });
 
 module.exports = mongoose.model("EmailAccount", emailAccountSchema);
