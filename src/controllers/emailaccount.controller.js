@@ -145,141 +145,88 @@ exports.getMaskedAccounts = async (req, res) => {
       isverified,
     } = req.query;
 
+    const MAX_TOTAL = 25;
+    const NORMAL_LIMIT = 10;
+    const MASKED_LIMIT = 15;
+
     console.log("Query params:", req.query);
 
-    // Optimization: Early return for invalid queries
-    
-
-    // Build query efficiently
     const query = {};
-    const conditions = [];
 
-    // Use $and only if we have multiple conditions
-    if (email) {
-      const emailValues = email.split(",").map(v => v.trim()).filter(v => v);
-      if (emailValues.length > 0) {
-        conditions.push({ email: { $in: emailValues.map(v => new RegExp(v, 'i')) } });
+    // Helper to convert comma-separated search string to RegExp OR query
+    const buildFieldCondition = (field, value) => {
+      const values = value
+        .split(",")
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0);
+
+      if (values.length > 0) {
+        return { $or: values.map((v) => ({ [field]: new RegExp(v, "i") })) };
       }
-    }
-
-    // For other fields, use $or within single field for better performance
-    const buildRegexArray = (value) => {
-      return value.split(",")
-        .map(v => v.trim())
-        .filter(v => v.length > 0)
-        .map(v => new RegExp(v, 'i'));
+      return null;
     };
 
-    // Single field search conditions (more efficient than multiple $and/$or)
-    const fieldConditions = [];
-    
+    // Build OR groups for search
+    const orGroups = [];
+
+    if (email) {
+      const emailCond = buildFieldCondition("email", email);
+      if (emailCond) orGroups.push(emailCond.$or);
+    }
+
     if (companyname) {
-      const regexes = buildRegexArray(companyname);
-      if (regexes.length > 0) {
-        fieldConditions.push({ companyname: { $in: regexes } });
-      }
+      const companyCond = buildFieldCondition("companyname", companyname);
+      if (companyCond) orGroups.push(companyCond.$or);
     }
 
     if (name) {
-      const regexes = buildRegexArray(name);
-      if (regexes.length > 0) {
-        fieldConditions.push({ name: { $in: regexes } });
-      }
+      const nameCond = buildFieldCondition("name", name);
+      if (nameCond) orGroups.push(nameCond.$or);
     }
 
     if (website) {
-      const regexes = buildRegexArray(website);
-      if (regexes.length > 0) {
-        fieldConditions.push({ website: { $in: regexes } });
-      }
+      const websiteCond = buildFieldCondition("website", website);
+      if (websiteCond) orGroups.push(websiteCond.$or);
     }
 
     if (role) {
-      const regexes = buildRegexArray(role);
-      if (regexes.length > 0) {
-        fieldConditions.push({ role: { $in: regexes } });
-      }
+      const roleCond = buildFieldCondition("role", role);
+      if (roleCond) orGroups.push(roleCond.$or);
     }
 
-    // Combine conditions efficiently
-    if (conditions.length > 0 || fieldConditions.length > 0) {
-      query.$and = [...conditions];
-      if (fieldConditions.length === 1) {
-        query.$and.push(fieldConditions[0]);
-      } else if (fieldConditions.length > 1) {
-        query.$and.push({ $or: fieldConditions });
-      }
+    // Merge OR groups into AND structure
+    if (orGroups.length > 0) {
+      query.$and = orGroups.map((group) => ({ $or: group }));
     }
 
     if (isverified) query.isverified = true;
 
-    // OPTIMIZATION: Use single query with cursor-like approach
-    const MAX_TOTAL = 25;
-    const NORMAL_LIMIT = 10;
-    
-    // Strategy 1: If no complex conditions, use simple pagination
-    if (Object.keys(query).length === 0 || (isverified && Object.keys(query).length === 1)) {
-      const [normalEmails, maskedEmailsRaw, totalCount] = await Promise.all([
-        EmailAccount.find(query)
-          .sort({ [sort]: order === "asc" ? 1 : -1 })
-          .limit(NORMAL_LIMIT)
-          .lean(), // Use lean() for better performance
-        
-        EmailAccount.find(query)
-          .sort({ [sort]: order === "asc" ? 1 : -1 })
-          .skip(NORMAL_LIMIT)
-          .limit(MAX_TOTAL - NORMAL_LIMIT)
-          .lean(),
-        
-        EmailAccount.countDocuments(query)
-      ]);
+    //  Fetch normal emails (limit 10)
+    const normalEmails = await EmailAccount.find(query)
+      .sort({ [sort]: order === "asc" ? 1 : -1 })
+      .limit(NORMAL_LIMIT);
 
-      const maskedEmails = maskedEmailsRaw.map(item => ({
-        ...item,
-        email: maskEmail(item.email),
-        masked: true
-      }));
+    //  Fetch masked emails (limit 15)
+    const maskedEmailsRaw = await EmailAccount.find(query)
+      .sort({ [sort]: order === "asc" ? 1 : -1 })
+      .skip(NORMAL_LIMIT) // skip first 10 so we don’t get duplicates
+      .limit(MASKED_LIMIT);
 
-      const allResults = [...normalEmails, ...maskedEmails];
+    // Mask the email field (e.g. johndoe@example.com → joh***@example.com)
 
-      return res.json({
-        data: allResults,
-        total: totalCount,
-        returned: allResults.length,
-        normalCount: normalEmails.length,
-        maskedCount: maskedEmails.length,
-        page: 1,
-        totalPages: Math.ceil(totalCount / MAX_TOTAL),
-        limit: MAX_TOTAL,
-      });
-    }
-
-    // Strategy 2: For complex queries, use aggregation pipeline (often faster)
-    const aggregationPipeline = [
-      { $match: query },
-      { $sort: { [sort]: order === "asc" ? 1 : -1 } },
-      {
-        $facet: {
-          normalEmails: [{ $limit: 10 }],
-          maskedEmails: [{ $skip: 10 }, { $limit: 15 }],
-          totalCount: [{ $count: "count" }]
-        }
-      }
-    ];
-
-    const result = await EmailAccount.aggregate(aggregationPipeline);
-    
-    const normalEmails = result[0]?.normalEmails || [];
-    const maskedEmailsRaw = result[0]?.maskedEmails || [];
-    const totalCount = result[0]?.totalCount[0]?.count || 0;
-
-    const maskedEmails = maskedEmailsRaw.map(item => ({
-      ...item,
+    const maskedEmails = maskedEmailsRaw.map((item) => ({
+      ...item.toObject(),
       email: maskEmail(item.email),
-      masked: true
+      masked: true,
     }));
 
+    // Merge both results
     const allResults = [...normalEmails, ...maskedEmails];
+
+    // Count total matching documents
+    const totalCount = await EmailAccount.countDocuments(query);
+    const count = await EmailAccount.countDocuments(query);
+    const totalPages = Math.ceil(count / 25);
 
     res.json({
       data: allResults,
@@ -288,17 +235,14 @@ exports.getMaskedAccounts = async (req, res) => {
       normalCount: normalEmails.length,
       maskedCount: maskedEmails.length,
       page: 1,
-      totalPages: Math.ceil(totalCount / MAX_TOTAL),
+      totalPages,
       limit: MAX_TOTAL,
     });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error fetching data" });
   }
 };
-
-// Helper function for email masking
 
 // GET single
 exports.getEmailAccount = async (req, res) => {
