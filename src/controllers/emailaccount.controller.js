@@ -143,106 +143,162 @@ exports.getMaskedAccounts = async (req, res) => {
       website,
       role,
       isverified,
-      page = 1
     } = req.query;
 
+    console.log("Query params:", req.query);
+
+    // Optimization: Early return for invalid queries
+    
+
+    // Build query efficiently
+    const query = {};
+    const conditions = [];
+
+    // Use $and only if we have multiple conditions
+    if (email) {
+      const emailValues = email.split(",").map(v => v.trim()).filter(v => v);
+      if (emailValues.length > 0) {
+        conditions.push({ email: { $in: emailValues.map(v => new RegExp(v, 'i')) } });
+      }
+    }
+
+    // For other fields, use $or within single field for better performance
+    const buildRegexArray = (value) => {
+      return value.split(",")
+        .map(v => v.trim())
+        .filter(v => v.length > 0)
+        .map(v => new RegExp(v, 'i'));
+    };
+
+    // Single field search conditions (more efficient than multiple $and/$or)
+    const fieldConditions = [];
+    
+    if (companyname) {
+      const regexes = buildRegexArray(companyname);
+      if (regexes.length > 0) {
+        fieldConditions.push({ companyname: { $in: regexes } });
+      }
+    }
+
+    if (name) {
+      const regexes = buildRegexArray(name);
+      if (regexes.length > 0) {
+        fieldConditions.push({ name: { $in: regexes } });
+      }
+    }
+
+    if (website) {
+      const regexes = buildRegexArray(website);
+      if (regexes.length > 0) {
+        fieldConditions.push({ website: { $in: regexes } });
+      }
+    }
+
+    if (role) {
+      const regexes = buildRegexArray(role);
+      if (regexes.length > 0) {
+        fieldConditions.push({ role: { $in: regexes } });
+      }
+    }
+
+    // Combine conditions efficiently
+    if (conditions.length > 0 || fieldConditions.length > 0) {
+      query.$and = [...conditions];
+      if (fieldConditions.length === 1) {
+        query.$and.push(fieldConditions[0]);
+      } else if (fieldConditions.length > 1) {
+        query.$and.push({ $or: fieldConditions });
+      }
+    }
+
+    if (isverified) query.isverified = true;
+
+    // OPTIMIZATION: Use single query with cursor-like approach
     const MAX_TOTAL = 25;
     const NORMAL_LIMIT = 10;
-    const skip = (page - 1) * MAX_TOTAL;
-
-    console.time("QueryExecution");
-
-    // Build efficient query
-    const query = {};
-    const searchTerms = [];
     
-    // For exact email matches (uses email_1 index)
-    if (email) {
-      const emails = email.split(',').map(e => e.trim()).filter(e => e);
-      if (emails.length === 1) {
-        // Exact match for single email
-        query.email = { $regex: emails[0], $options: 'i' };
-      } else if (emails.length > 1) {
-        // Multiple emails
-        query.email = { $in: emails.map(e => new RegExp(e, 'i')) };
-      }
+    // Strategy 1: If no complex conditions, use simple pagination
+    if (Object.keys(query).length === 0 || (isverified && Object.keys(query).length === 1)) {
+      const [normalEmails, maskedEmailsRaw, totalCount] = await Promise.all([
+        EmailAccount.find(query)
+          .sort({ [sort]: order === "asc" ? 1 : -1 })
+          .limit(NORMAL_LIMIT)
+          .lean(), // Use lean() for better performance
+        
+        EmailAccount.find(query)
+          .sort({ [sort]: order === "asc" ? 1 : -1 })
+          .skip(NORMAL_LIMIT)
+          .limit(MAX_TOTAL - NORMAL_LIMIT)
+          .lean(),
+        
+        EmailAccount.countDocuments(query)
+      ]);
+
+      const maskedEmails = maskedEmailsRaw.map(item => ({
+        ...item,
+        email: maskEmail(item.email),
+        masked: true
+      }));
+
+      const allResults = [...normalEmails, ...maskedEmails];
+
+      return res.json({
+        data: allResults,
+        total: totalCount,
+        returned: allResults.length,
+        normalCount: normalEmails.length,
+        maskedCount: maskedEmails.length,
+        page: 1,
+        totalPages: Math.ceil(totalCount / MAX_TOTAL),
+        limit: MAX_TOTAL,
+      });
     }
-    
-    // For company name (uses companyname_1 index)
-    if (companyname) {
-      const companies = companyname.split(',').map(c => c.trim()).filter(c => c);
-      if (companies.length > 0) {
-        query.companyname = { $in: companies.map(c => new RegExp(c, 'i')) };
+
+    // Strategy 2: For complex queries, use aggregation pipeline (often faster)
+    const aggregationPipeline = [
+      { $match: query },
+      { $sort: { [sort]: order === "asc" ? 1 : -1 } },
+      {
+        $facet: {
+          normalEmails: [{ $limit: 10 }],
+          maskedEmails: [{ $skip: 10 }, { $limit: 15 }],
+          totalCount: [{ $count: "count" }]
+        }
       }
-    }
+    ];
+
+    const result = await EmailAccount.aggregate(aggregationPipeline);
     
-    // Add other filters
-    if (isverified === 'true') query.isverified = true;
-
-    // Determine which index to use for sorting
-    let hintIndex = null;
-    if (sort === 'email') hintIndex = 'email_1';
-    else if (sort === 'companyname') hintIndex = 'companyname_1';
-    else if (sort === 'name') hintIndex = 'name_1';
-    else if (sort === 'createdAt') hintIndex = 'createdAt_1';
-
-    // Query with timeout
-    const [allResults, totalCount] = await Promise.all([
-      EmailAccount.find(query)
-        .sort({ [sort]: order === "asc" ? 1 : -1 })
-        .skip(skip)
-        .limit(MAX_TOTAL)
-        .maxTimeMS(5000) // 5 second timeout
-        .hint(hintIndex) // Force index usage
-        .lean()
-        .exec(),
-      
-      EmailAccount.countDocuments(query)
-        .maxTimeMS(3000)
-        .exec()
-    ]);
-
-    // Process results
-    const normalEmails = allResults.slice(0, NORMAL_LIMIT);
-    const maskedEmailsRaw = allResults.slice(NORMAL_LIMIT, MAX_TOTAL);
+    const normalEmails = result[0]?.normalEmails || [];
+    const maskedEmailsRaw = result[0]?.maskedEmails || [];
+    const totalCount = result[0]?.totalCount[0]?.count || 0;
 
     const maskedEmails = maskedEmailsRaw.map(item => ({
       ...item,
       email: maskEmail(item.email),
-      masked: true,
+      masked: true
     }));
 
-    const finalResults = [...normalEmails, ...maskedEmails];
-    const totalPages = Math.ceil(totalCount / MAX_TOTAL);
-
-    console.timeEnd("QueryExecution");
-    console.log(`Found ${totalCount} records in query`);
+    const allResults = [...normalEmails, ...maskedEmails];
 
     res.json({
-      data: finalResults,
+      data: allResults,
       total: totalCount,
-      returned: finalResults.length,
+      returned: allResults.length,
       normalCount: normalEmails.length,
       maskedCount: maskedEmails.length,
-      page: parseInt(page),
-      totalPages,
+      page: 1,
+      totalPages: Math.ceil(totalCount / MAX_TOTAL),
       limit: MAX_TOTAL,
     });
+
   } catch (err) {
-    console.error("Error in getMaskedAccounts:", err);
-    
-    if (err.name === 'MongoServerError' && err.code === 50) {
-      return res.status(408).json({ 
-        message: "Query timeout. Try a more specific search." 
-      });
-    }
-    
-    res.status(500).json({ 
-      message: "Error fetching data",
-      error: err.message 
-    });
+    console.error(err);
+    res.status(500).json({ message: "Error fetching data" });
   }
 };
+
+// Helper function for email masking
 
 // GET single
 exports.getEmailAccount = async (req, res) => {
