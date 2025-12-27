@@ -9,6 +9,8 @@ const AUTH = {
   password: "emailFinder@2025"
 };
 
+const INDEX = "email_accounts"; // ✅ ADD THIS LINE
+
 // Helper: mask email
 const maskEmail = (email) => {
   if (!email || typeof email !== "string") return email;
