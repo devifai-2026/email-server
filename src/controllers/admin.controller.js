@@ -14,7 +14,7 @@ const { connectPostgres } = require("../config/db.js");
 
 
 const axios = require("axios");
-const OPENSEARCH_INDEX = "email_accounts_v2";
+const OPENSEARCH_INDEX = "email_accounts";
 const OPENSEARCH_URL =
   "https://vpc-email-search-uzaqvpiyheutyfluip6kc244fu.ap-south-1.es.amazonaws.com";
 
