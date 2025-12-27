@@ -38,20 +38,19 @@ exports.getEmailAccounts = async (req, res) => {
     const pageNum = Math.max(parseInt(page) || 1, 1);
     const size = Math.min(parseInt(limit) || 100, 1000);
 
-    /* ---------------- SAFE SORT (FORCED) ---------------- */
-    // Ignore frontend sort completely
-    const sort = [{ "email.keyword": "asc" }]; // Use keyword field for sorting
+    /* ---------------- SAFE SORT (KEYWORD ONLY) ---------------- */
+    const sort = [{ "email": "asc" }];
 
     /* ---------------- FILTERS ---------------- */
     const must = [];
 
     if (email) {
-      must.push({ term: { "email.keyword": email.toLowerCase() } });
+      must.push({ term: { email: email.toLowerCase() } });
     }
 
     if (website) {
       must.push({
-        term: { "website.keyword": website.replace(/^www\./, "").toLowerCase() }
+        term: { website: website.replace(/^www\./, "").toLowerCase() }
       });
     }
 
@@ -67,12 +66,11 @@ exports.getEmailAccounts = async (req, res) => {
       must.push({ match_phrase_prefix: { role } });
     }
 
-    const query = must.length ? { bool: { must } } : { match_all: {} };
-
     const body = {
       size,
       sort,
-      query
+      track_total_hits: true,   // ✅ IMPORTANT
+      query: must.length ? { bool: { must } } : { match_all: {} }
     };
 
     /* ---------------- PAGE → search_after ---------------- */
@@ -95,7 +93,7 @@ exports.getEmailAccounts = async (req, res) => {
     );
 
     const hits = response.data.hits.hits;
-    const total = response.data.hits.total?.value || 0;
+    const total = response.data.hits.total.value; // ✅ TOTAL ROWS
 
     /* ---------------- STORE NEXT CURSOR ---------------- */
     if (hits.length) {
@@ -105,11 +103,10 @@ exports.getEmailAccounts = async (req, res) => {
 
     res.json({
       success: true,
+      total,                 // ✅ INCLUDED
       page: pageNum,
       limit: size,
       count: hits.length,
-      total: total,  // Added total count here
-      hasMore: hits.length === size && pageNum * size < total, // Optional: add hasMore flag
       data: hits.map(h => h._source)
     });
 
@@ -121,6 +118,7 @@ exports.getEmailAccounts = async (req, res) => {
     });
   }
 };
+
 
 // ====== GET MASKED EMAILS ======
 exports.getMaskedAccounts = async (req, res) => {
