@@ -27,66 +27,89 @@ exports.getEmailAccounts = async (req, res) => {
       name,
       role,
       website,
-      limit = 50,
-      searchAfter
+      page = 1,
+      limit = 100
     } = req.query;
 
-    const body = {
-      size: Math.min(Number(limit), 100),
-      sort: [
-        { created_at: "desc" },
-        { email: "asc" }
-      ],
-      query: {
-        bool: {
-          must: [],
-          filter: []
-        }
-      }
-    };
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const size = Math.min(parseInt(limit) || 100, 1000);
 
-    if (email) body.query.bool.filter.push({ term: { email } });
-    if (website) body.query.bool.filter.push({ term: { website } });
+    /* ---------------- SAFE SORT (FORCED) ---------------- */
+    // Ignore frontend sort completely
+    const sort = [{ "email": "asc" }]; // keyword field only
 
-    if (companyname) {
-      body.query.bool.must.push({
-        match: {
-          companyname: {
-            query: companyname,
-            operator: "and"
-          }
-        }
+    /* ---------------- FILTERS ---------------- */
+    const must = [];
+
+    if (email) {
+      must.push({ term: { email: email.toLowerCase() } });
+    }
+
+    if (website) {
+      must.push({
+        term: { website: website.replace(/^www\./, "").toLowerCase() }
       });
     }
 
-    if (name) body.query.bool.must.push({ match: { name } });
-    if (role) body.query.bool.must.push({ match: { role } });
-
-    if (searchAfter) {
-      body.search_after = JSON.parse(searchAfter);
+    if (companyname) {
+      must.push({ match_phrase_prefix: { companyname } });
     }
 
-    const { data } = await axios.post(
-      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
+    if (name) {
+      must.push({ match_phrase_prefix: { name } });
+    }
+
+    if (role) {
+      must.push({ match_phrase_prefix: { role } });
+    }
+
+    const body = {
+      size,
+      sort,
+      query: must.length ? { bool: { must } } : { match_all: {} }
+    };
+
+    /* ---------------- PAGE → search_after ---------------- */
+    if (pageNum > 1) {
+      const cursor = pageCursorMap.get(pageNum - 1);
+      if (!cursor) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid page number"
+        });
+      }
+      body.search_after = [cursor];
+    }
+
+    /* ---------------- SEARCH ---------------- */
+    const response = await axios.post(
+      `${OPENSEARCH_URL}/${INDEX}/_search`,
       body,
       { auth: AUTH }
     );
 
-    const hits = data.hits.hits;
+    const hits = response.data.hits.hits;
+
+    /* ---------------- STORE NEXT CURSOR ---------------- */
+    if (hits.length) {
+      const lastSortValue = hits[hits.length - 1].sort[0];
+      pageCursorMap.set(pageNum, lastSortValue);
+    }
 
     res.json({
       success: true,
+      page: pageNum,
+      limit: size,
       count: hits.length,
-      total: data.hits.total?.value || 0,
-      nextSearchAfter: hits.length
-        ? hits[hits.length - 1].sort
-        : null,
       data: hits.map(h => h._source)
     });
 
   } catch (err) {
     console.error("Search error:", err.response?.data || err.message);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({
+      success: false,
+      error: err.response?.data || err.message
+    });
   }
 };
 
