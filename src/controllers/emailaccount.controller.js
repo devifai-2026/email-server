@@ -39,19 +39,28 @@ exports.getEmailAccounts = async (req, res) => {
     const size = Math.min(parseInt(limit) || 100, 1000);
     const from = (pageNum - 1) * size;
 
+    // Prevent deep pagination that exceeds max_result_window
+    if (from + size > 10000) { // OpenSearch default limit
+      return res.status(400).json({
+        success: false,
+        message: "Page number too high. Please use search_after pagination for deep pages.",
+        maxAllowedPage: Math.floor(10000 / size)
+      });
+    }
+
     /* ---------- SAFE SORT (KEYWORD FIELD) ---------- */
-    const sort = [{ email: "asc" }];
+    const sort = [{ "email.keyword": "asc" }]; // Use keyword field for better sorting
 
     /* ---------- FILTERS ---------- */
     const must = [];
 
     if (email) {
-      must.push({ term: { email: email.toLowerCase() } });
+      must.push({ term: { "email.keyword": email.toLowerCase() } });
     }
 
     if (website) {
       must.push({
-        term: { website: website.replace(/^www\./, "").toLowerCase() }
+        term: { "website.keyword": website.replace(/^www\./, "").toLowerCase() }
       });
     }
 
@@ -68,7 +77,7 @@ exports.getEmailAccounts = async (req, res) => {
     }
 
     const body = {
-      from,                    // ✅ frontend-compatible pagination
+      from,
       size,
       sort,
       track_total_hits: true,
@@ -77,7 +86,7 @@ exports.getEmailAccounts = async (req, res) => {
 
     /* ---------- SEARCH ---------- */
     const response = await axios.post(
-      `${OPENSEARCH_URL}/${INDEX}/_search`,
+      `${OPENSEARCH_URL}/email_accounts/_search`, // Use correct index name
       body,
       { auth: AUTH }
     );
@@ -88,30 +97,40 @@ exports.getEmailAccounts = async (req, res) => {
 
     /* ---------- FIX DATA SHAPE ---------- */
     const data = hits.map(hit => ({
-      _id: hit._id,                    // ✅ REQUIRED
-      is_verified: false,              // ✅ REQUIRED
+      _id: hit._id,
+      is_verified: hit._source.is_verified || false, // Use actual value if exists
       ...hit._source
     }));
 
     res.json({
       success: true,
       total,
-      totalPages,                      // ✅ REQUIRED
+      totalPages,
       page: pageNum,
       limit: size,
       count: data.length,
+      maxPage: Math.floor(10000 / size), // Inform frontend of limit
       data
     });
 
   } catch (err) {
     console.error("Search error:", err.response?.data || err.message);
+    
+    // Specific error handling for max_result_window
+    if (err.response?.data?.error?.reason?.includes("Result window is too large")) {
+      return res.status(400).json({
+        success: false,
+        message: "Page number exceeds OpenSearch limit. Please use smaller page numbers or implement search_after pagination.",
+        error: err.response.data.error.reason
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      error: err.response?.data || err.message
+      error: err.response?.data?.error?.reason || err.message
     });
   }
 };
-
 
 
 // ====== GET MASKED EMAILS ======
