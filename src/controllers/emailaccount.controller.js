@@ -37,11 +37,12 @@ exports.getEmailAccounts = async (req, res) => {
 
     const pageNum = Math.max(parseInt(page) || 1, 1);
     const size = Math.min(parseInt(limit) || 100, 1000);
+    const from = (pageNum - 1) * size;
 
-    /* ---------------- SAFE SORT (KEYWORD ONLY) ---------------- */
-    const sort = [{ "email": "asc" }];
+    /* ---------- SAFE SORT (KEYWORD FIELD) ---------- */
+    const sort = [{ email: "asc" }];
 
-    /* ---------------- FILTERS ---------------- */
+    /* ---------- FILTERS ---------- */
     const must = [];
 
     if (email) {
@@ -67,25 +68,14 @@ exports.getEmailAccounts = async (req, res) => {
     }
 
     const body = {
+      from,                    // ✅ frontend-compatible pagination
       size,
       sort,
-      track_total_hits: true,   // ✅ IMPORTANT
+      track_total_hits: true,
       query: must.length ? { bool: { must } } : { match_all: {} }
     };
 
-    /* ---------------- PAGE → search_after ---------------- */
-    if (pageNum > 1) {
-      const cursor = pageCursorMap.get(pageNum - 1);
-      if (!cursor) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid page number"
-        });
-      }
-      body.search_after = [cursor];
-    }
-
-    /* ---------------- SEARCH ---------------- */
+    /* ---------- SEARCH ---------- */
     const response = await axios.post(
       `${OPENSEARCH_URL}/${INDEX}/_search`,
       body,
@@ -93,21 +83,24 @@ exports.getEmailAccounts = async (req, res) => {
     );
 
     const hits = response.data.hits.hits;
-    const total = response.data.hits.total.value; // ✅ TOTAL ROWS
+    const total = response.data.hits.total.value;
+    const totalPages = Math.ceil(total / size);
 
-    /* ---------------- STORE NEXT CURSOR ---------------- */
-    if (hits.length) {
-      const lastSortValue = hits[hits.length - 1].sort[0];
-      pageCursorMap.set(pageNum, lastSortValue);
-    }
+    /* ---------- FIX DATA SHAPE ---------- */
+    const data = hits.map(hit => ({
+      _id: hit._id,                    // ✅ REQUIRED
+      is_verified: false,              // ✅ REQUIRED
+      ...hit._source
+    }));
 
     res.json({
       success: true,
-      total,                 // ✅ INCLUDED
+      total,
+      totalPages,                      // ✅ REQUIRED
       page: pageNum,
       limit: size,
-      count: hits.length,
-      data: hits.map(h => h._source)
+      count: data.length,
+      data
     });
 
   } catch (err) {
@@ -118,6 +111,7 @@ exports.getEmailAccounts = async (req, res) => {
     });
   }
 };
+
 
 
 // ====== GET MASKED EMAILS ======
