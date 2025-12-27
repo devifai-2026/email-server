@@ -39,26 +39,49 @@ exports.getEmailAccounts = async (req, res) => {
     const size = Math.min(parseInt(limit) || 100, 1000);
     const from = (pageNum - 1) * size;
 
-    /* ---------- SAFE SORT (KEYWORD FIELD) ---------- */
+    /* ---------- SAFE SORT ---------- */
     const sort = [{ email: "asc" }];
 
-    /* ---------- FILTERS ---------- */
     const must = [];
+    const should = [];
 
+    /* ---------- EMAIL / DOMAIN FIX ---------- */
     if (email) {
-      must.push({ term: { email: email.toLowerCase() } });
+      const values = email.split(",").map(v =>
+        v.trim().replace(/^www\./, "").toLowerCase()
+      );
+
+      values.forEach(value => {
+        if (value.includes("@")) {
+          // ✅ real email
+          should.push({ term: { email: value } });
+        } else {
+          // ✅ domain → search website
+          should.push({
+            wildcard: {
+              website: `*${value}`
+            }
+          });
+        }
+      });
     }
 
-if (website) {
-  const cleanWebsite = website.replace(/^www\./, "").toLowerCase();
-  must.push({
-    wildcard: {
-      website: `*${cleanWebsite}` // matches icic.org or www.icic.org
+    /* ---------- WEBSITE PARAM (CORRECT ONE) ---------- */
+    if (website) {
+      const domains = website.split(",").map(v =>
+        v.trim().replace(/^www\./, "").toLowerCase()
+      );
+
+      domains.forEach(domain => {
+        should.push({
+          wildcard: {
+            website: `*${domain}`
+          }
+        });
+      });
     }
-  });
-}
 
-
+    /* ---------- OTHER FILTERS ---------- */
     if (companyname) {
       must.push({ match_phrase_prefix: { companyname } });
     }
@@ -71,12 +94,20 @@ if (website) {
       must.push({ match_phrase_prefix: { role } });
     }
 
+    /* ---------- QUERY BUILD ---------- */
+    const query = {
+      bool: {
+        must,
+        ...(should.length ? { should, minimum_should_match: 1 } : {})
+      }
+    };
+
     const body = {
-      from,                    // ✅ frontend-compatible pagination
+      from,
       size,
       sort,
       track_total_hits: true,
-      query: must.length ? { bool: { must } } : { match_all: {} }
+      query: must.length || should.length ? query : { match_all: {} }
     };
 
     /* ---------- SEARCH ---------- */
@@ -90,17 +121,16 @@ if (website) {
     const total = response.data.hits.total.value;
     const totalPages = Math.ceil(total / size);
 
-    /* ---------- FIX DATA SHAPE ---------- */
     const data = hits.map(hit => ({
-      _id: hit._id,                    // ✅ REQUIRED
-      is_verified: false,              // ✅ REQUIRED
+      _id: hit._id,
+      is_verified: false,
       ...hit._source
     }));
 
     res.json({
       success: true,
       total,
-      totalPages,                      // ✅ REQUIRED
+      totalPages,
       page: pageNum,
       limit: size,
       count: data.length,
@@ -115,6 +145,7 @@ if (website) {
     });
   }
 };
+
 
 
 
