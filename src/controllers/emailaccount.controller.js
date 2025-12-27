@@ -40,19 +40,37 @@ exports.getEmailAccounts = async (req, res) => {
     const from = (pageNum - 1) * size;
 
     /* ---------- SAFE SORT (KEYWORD FIELD) ---------- */
-    const sort = [{ email: "asc" }];
+    const sort = [{ "email.keyword": "asc" }];
 
     /* ---------- FILTERS ---------- */
     const must = [];
 
     if (email) {
-      must.push({ term: { email: email.toLowerCase() } });
+      must.push({ term: { "email.keyword": email.toLowerCase() } });
     }
 
     if (website) {
+      // Normalize the search term: remove www. and https?://
+      let normalizedWebsite = website.toLowerCase();
+      normalizedWebsite = normalizedWebsite.replace(/^https?:\/\//, '');
+      normalizedWebsite = normalizedWebsite.replace(/^www\./, '');
+      
+      // Search using wildcard to match any variation
       must.push({
-        term: { website: website.replace(/^www\./, "").toLowerCase() }
+        wildcard: {
+          "website.keyword": {
+            value: `*${normalizedWebsite}*`,
+            case_insensitive: true
+          }
+        }
       });
+      
+      // OR use regexp query for more flexible matching
+      // must.push({
+      //   regexp: {
+      //     "website.keyword": `.*${normalizedWebsite.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*`
+      //   }
+      // });
     }
 
     if (companyname) {
@@ -68,7 +86,7 @@ exports.getEmailAccounts = async (req, res) => {
     }
 
     const body = {
-      from,                    // ✅ frontend-compatible pagination
+      from,
       size,
       sort,
       track_total_hits: true,
@@ -88,15 +106,15 @@ exports.getEmailAccounts = async (req, res) => {
 
     /* ---------- FIX DATA SHAPE ---------- */
     const data = hits.map(hit => ({
-      _id: hit._id,                    // ✅ REQUIRED
-      is_verified: false,              // ✅ REQUIRED
+      _id: hit._id,
+      is_verified: hit._source.is_verified || false,
       ...hit._source
     }));
 
     res.json({
       success: true,
       total,
-      totalPages,                      // ✅ REQUIRED
+      totalPages,
       page: pageNum,
       limit: size,
       count: data.length,
@@ -111,7 +129,6 @@ exports.getEmailAccounts = async (req, res) => {
     });
   }
 };
-
 
 
 // ====== GET MASKED EMAILS ======
