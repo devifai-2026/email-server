@@ -135,17 +135,9 @@ exports.deleteCard = async (req, res) => {
 
 exports.getDashboardStats = async (req, res) => {
   try {
-    // Use OpenSearch to get email accounts count
-    const body = {
-      size: 0,
-      query: {
-        match_all: {}
-      }
-    };
-
-    const { data } = await axios.post(
+    // ✅ AWS OpenSearch: GET _count (NO BODY)
+    const { data } = await axios.get(
       `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_count`,
-      body,
       { auth: AUTH }
     );
 
@@ -160,7 +152,9 @@ exports.getDashboardStats = async (req, res) => {
       User.countDocuments(),
       User.countDocuments({ isActive: true }),
       Plan.countDocuments(),
-      Payment.aggregate([{ $group: { _id: null, totalAmount: { $sum: "$amount" } } }])
+      Payment.aggregate([
+        { $group: { _id: null, totalAmount: { $sum: "$amount" } } }
+      ])
     ]);
 
     const totalTransactionAmount =
@@ -176,11 +170,18 @@ exports.getDashboardStats = async (req, res) => {
         inactiveUsers: totalUsers - activeUsers,
         totalEmailAccounts,
         totalPlans,
-        totalTransactionAmount,
-      },
+        totalTransactionAmount
+      }
     });
   } catch (err) {
-    console.error("Error fetching dashboard stats:", err.response?.data || err.message);
-    res.status(500).json({ success: false, message: "Server error while fetching dashboard stats" });
+    console.error(
+      "Error fetching dashboard stats:",
+      err.response?.data || err.message
+    );
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching dashboard stats"
+    });
   }
 };
+
