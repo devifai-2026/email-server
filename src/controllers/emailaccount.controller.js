@@ -1,19 +1,15 @@
-const agenda = require("../jobs/agenda");
-const EmailAccount = require("../models/emailaccount.model");
-const User = require("../models/user.model");
-const { roles } = require("../utils/config");
+// controllers/emailAccount.controller.js
+const axios = require("axios");
+const OPENSEARCH_INDEX = "email_accounts_v2";
+const OPENSEARCH_URL =
+  "https://vpc-email-search-uzaqvpiyheutyfluip6kc244fu.ap-south-1.es.amazonaws.com";
 
-// GET all with filters + pagination + sorting
+const AUTH = {
+  username: "postgres",
+  password: "emailFinder@2025"
+};
 
-// maskEmail = (email) => {
-//   const [name, domain] = email.split("@");
-//   if (!name || !domain) return "*****";
-
-//   const visible = name.slice(0, 1);
-//   const masked = "*".repeat(Math.max(name.length - 1, 3));
-//   return `${visible}${masked}@${domain}`;
-// };
-
+// Helper: mask email
 const maskEmail = (email) => {
   if (!email || typeof email !== "string") return email;
   const [user, domain] = email.split("@");
@@ -22,404 +18,388 @@ const maskEmail = (email) => {
   return `${visible}${"*".repeat(Math.max(3, user.length - 3))}@${domain}`;
 };
 
+// ====== GET EMAIL ACCOUNTS WITH FILTERS, PAGINATION ======
 exports.getEmailAccounts = async (req, res) => {
   try {
-    console.log('Query parameters received:', req.query);
-    
-    // ✅ Pagination
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
-
-    // ✅ Sorting - Support both frontend and backend parameter names
-    const sortField = req.query.sortname || req.query.sort || "createdAt";
-    const sortOrder = req.query.sortype === "asc" || req.query.order === "asc" ? 1 : -1;
-    const sort = { [sortField]: sortOrder };
-
-    console.log('Sorting configuration:', {
-      sortField,
-      sortOrder,
-      sortObject: sort
-    });
-
-    // ✅ Helper: build OR condition from comma-separated values
-    const buildFieldCondition = (field, value) => {
-      const values = value
-        .split(",")
-        .map((v) => v.trim())
-        .filter((v) => v.length > 0);
-      if (values.length > 0) {
-        return { $or: values.map((v) => ({ [field]: new RegExp(v, "i") })) };
-      }
-      return null;
-    };
-
-    // ✅ Build filters
-    const andConditions = [];
-
-    const fields = [
-      "email",
-      "domain",
-      "companyname",
-      "name",
-      "website",
-      "role",
-    ];
-
-    fields.forEach((f) => {
-      if (req.query[f]) {
-        const cond = buildFieldCondition(f, req.query[f]);
-        if (cond) andConditions.push(cond);
-      }
-    });
-
-    // Handle individual filter parameters from frontend
-    if (req.query.name) {
-      andConditions.push({ name: new RegExp(req.query.name, "i") });
-    }
-    if (req.query.email) {
-      andConditions.push({ email: new RegExp(req.query.email, "i") });
-    }
-    if (req.query.companyname) {
-      andConditions.push({ companyname: new RegExp(req.query.companyname, "i") });
-    }
-    if (req.query.website) {
-      andConditions.push({ website: new RegExp(req.query.website, "i") });
-    }
-    if (req.query.role) {
-      andConditions.push({ role: new RegExp(req.query.role, "i") });
-    }
-
-    // ✅ Boolean filter for verified
-    if (req.query.isverified) {
-      andConditions.push({
-        isverified: req.query.isverified === "true",
-      });
-    }
-
-    const filter = andConditions.length > 0 ? { $and: andConditions } : {};
-
-    console.log('Final filter:', JSON.stringify(filter, null, 2));
-    console.log('Final sort:', sort);
-
-    // ✅ Fetch data
-    const [accounts, total] = await Promise.all([
-      EmailAccount.find(filter).sort(sort).skip(skip).limit(limit),
-      EmailAccount.countDocuments(filter),
-    ]);
-
-    // ✅ Check auth/subscription
-    const isAuthenticated = !!req.user;
-    const isSubscribed =
-      isAuthenticated && req.user?.subscription?.expiresAt > new Date();
-
-    res.status(200).json({
-      success: true,
-      total,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit),
-      isMasked: !isSubscribed,
-      data: accounts,
-    });
-  } catch (err) {
-    console.error("getEmailAccounts error:", err);
-    res.status(500).json({
-      success: false,
-      message: err.message || "Failed to fetch email accounts",
-    });
-  }
-};
-
-// GET masked data
-exports.getMaskedAccounts = async (req, res) => {
-  try {
     const {
-      sort = "createdAt",
-      order = "desc",
       email,
       companyname,
       name,
-      website,
       role,
-      isverified,
+      website,
+      limit = 50,
+      searchAfter
     } = req.query;
 
-    const MAX_TOTAL = 25;
-    const NORMAL_LIMIT = 10;
-    const MASKED_LIMIT = 15;
-
-    console.log("Query params:", req.query);
-
-    const query = {};
-
-    // Helper to convert comma-separated search string to RegExp OR query
-    const buildFieldCondition = (field, value) => {
-      const values = value
-        .split(",")
-        .map((v) => v.trim())
-        .filter((v) => v.length > 0);
-
-      if (values.length > 0) {
-        return { $or: values.map((v) => ({ [field]: new RegExp(v, "i") })) };
+    const body = {
+      size: Math.min(Number(limit), 100),
+      sort: [
+        { created_at: "desc" },
+        { email: "asc" }
+      ],
+      query: {
+        bool: {
+          must: [],
+          filter: []
+        }
       }
-      return null;
     };
 
-    // Build OR groups for search
-    const orGroups = [];
-
-    if (email) {
-      const emailCond = buildFieldCondition("email", email);
-      if (emailCond) orGroups.push(emailCond.$or);
-    }
+    if (email) body.query.bool.filter.push({ term: { email } });
+    if (website) body.query.bool.filter.push({ term: { website } });
 
     if (companyname) {
-      const companyCond = buildFieldCondition("companyname", companyname);
-      if (companyCond) orGroups.push(companyCond.$or);
+      body.query.bool.must.push({
+        match: {
+          companyname: {
+            query: companyname,
+            operator: "and"
+          }
+        }
+      });
     }
 
-    if (name) {
-      const nameCond = buildFieldCondition("name", name);
-      if (nameCond) orGroups.push(nameCond.$or);
+    if (name) body.query.bool.must.push({ match: { name } });
+    if (role) body.query.bool.must.push({ match: { role } });
+
+    if (searchAfter) {
+      body.search_after = JSON.parse(searchAfter);
     }
 
-    if (website) {
-      const websiteCond = buildFieldCondition("website", website);
-      if (websiteCond) orGroups.push(websiteCond.$or);
-    }
+    const { data } = await axios.post(
+      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
+      body,
+      { auth: AUTH }
+    );
 
-    if (role) {
-      const roleCond = buildFieldCondition("role", role);
-      if (roleCond) orGroups.push(roleCond.$or);
-    }
-
-    // Merge OR groups into AND structure
-    if (orGroups.length > 0) {
-      query.$and = orGroups.map((group) => ({ $or: group }));
-    }
-
-    if (isverified) query.isverified = true;
-
-    //  Fetch normal emails (limit 10)
-    const normalEmails = await EmailAccount.find(query)
-      .sort({ [sort]: order === "asc" ? 1 : -1 })
-      .limit(NORMAL_LIMIT);
-
-    //  Fetch masked emails (limit 15)
-    const maskedEmailsRaw = await EmailAccount.find(query)
-      .sort({ [sort]: order === "asc" ? 1 : -1 })
-      .skip(NORMAL_LIMIT) // skip first 10 so we don’t get duplicates
-      .limit(MASKED_LIMIT);
-
-    // Mask the email field (e.g. johndoe@example.com → joh***@example.com)
-
-    const maskedEmails = maskedEmailsRaw.map((item) => ({
-      ...item.toObject(),
-      email: maskEmail(item.email),
-      masked: true,
-    }));
-
-    // Merge both results
-    const allResults = [...normalEmails, ...maskedEmails];
-
-    // Count total matching documents
-    const totalCount = await EmailAccount.countDocuments(query);
-    const count = await EmailAccount.countDocuments(query);
-    const totalPages = Math.ceil(count / 25);
+    const hits = data.hits.hits;
 
     res.json({
-      data: allResults,
-      total: totalCount,
-      returned: allResults.length,
-      normalCount: normalEmails.length,
-      maskedCount: maskedEmails.length,
-      page: 1,
-      totalPages,
-      limit: MAX_TOTAL,
+      success: true,
+      count: hits.length,
+      total: data.hits.total?.value || 0,
+      nextSearchAfter: hits.length
+        ? hits[hits.length - 1].sort
+        : null,
+      data: hits.map(h => h._source)
     });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Error fetching data" });
+    console.error("Search error:", err.response?.data || err.message);
+    res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// GET single
+// ====== GET MASKED EMAILS ======
+exports.getMaskedAccounts = async (req, res) => {
+  try {
+    const { companyname, limit = 25, page = 1 } = req.query;
+
+    if (!companyname) return res.status(400).json({ message: "companyname filter is required" });
+
+    const MAX_LIMIT = Math.min(parseInt(limit), 100);
+    const from = (parseInt(page) - 1) * MAX_LIMIT;
+
+    const body = {
+      size: MAX_LIMIT,
+      from: from,
+      sort: [
+        { created_at: "desc" }
+      ],
+      query: {
+        match: {
+          companyname: companyname
+        }
+      }
+    };
+
+    const { data } = await axios.post(
+      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
+      body,
+      { auth: AUTH }
+    );
+
+    const hits = data.hits.hits;
+    const totalCount = data.hits.total?.value || 0;
+
+    // Apply masking logic
+    const rows = hits.map(h => h._source);
+    const normalEmails = rows.slice(0, 10);
+    const maskedEmails = rows.slice(10).map(r => ({ ...r, email: maskEmail(r.email), masked: true }));
+
+    res.json({
+      data: [...normalEmails, ...maskedEmails],
+      total: totalCount,
+      returned: rows.length,
+      normalCount: normalEmails.length,
+      maskedCount: maskedEmails.length,
+      page: parseInt(page),
+      totalPages: Math.ceil(totalCount / MAX_LIMIT),
+      limit: MAX_LIMIT,
+    });
+  } catch (err) {
+    console.error("getMaskedAccounts error:", err.response?.data || err.message);
+    res.status(500).json({ message: "Error fetching masked accounts" });
+  }
+};
+
+// ====== GET SINGLE EMAIL ACCOUNT ======
 exports.getEmailAccount = async (req, res) => {
   try {
-    const account = await EmailAccount.findById(req.params.id);
-    if (!account) return res.status(404).json({ message: "Record not found" });
+    const email = req.params.id;
 
-    res
-      .status(200)
-      .json({ account, message: "Emailaccount details fetched successfully" });
+    if (!email.includes("@")) return res.status(400).json({ message: "Please provide valid email" });
+
+    const body = {
+      query: {
+        term: {
+          email: email
+        }
+      }
+    };
+
+    const { data } = await axios.post(
+      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
+      body,
+      { auth: AUTH }
+    );
+
+    if (data.hits.hits.length === 0) return res.status(404).json({ message: "Record not found" });
+
+    res.status(200).json({ account: data.hits.hits[0]._source, message: "Email account fetched successfully" });
   } catch (err) {
+    console.error("getEmailAccount error:", err.response?.data || err.message);
     res.status(500).json({ message: "Error fetching record" });
   }
 };
 
-// POST create
+// ====== CREATE EMAIL ACCOUNT ======
 exports.createEmailAccount = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, name, companyname, role, website, linkedin } = req.body;
 
-    if (await EmailAccount.findOne({ email })) {
-      return res.status(400).json({ message: "Email already exists" });
-    }
+    if (!email) return res.status(400).json({ message: "Email is required" });
 
-    agenda.now("verify_and_save_email", { row: req.body });
+    const accountData = {
+      email,
+      name: name || null,
+      companyname: companyname || null,
+      role: role || null,
+      website: website || null,
+      linkedin: linkedin || null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      is_verified: true
+    };
 
-    res.status(201).json(account);
+    // Create document in OpenSearch
+    const response = await axios.put(
+      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_doc/${encodeURIComponent(email)}`,
+      accountData,
+      { auth: AUTH }
+    );
+
+    res.status(201).json({ 
+      account: accountData, 
+      message: "Email account created successfully",
+      _id: response.data._id 
+    });
   } catch (err) {
+    console.error("createEmailAccount error:", err.response?.data || err.message);
     res.status(500).json({ message: "Error creating record" });
   }
 };
 
-// PUT update
+// ====== UPDATE EMAIL ACCOUNT ======
 exports.updateEmailAccount = async (req, res) => {
   try {
-    const account = await EmailAccount.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true }
+    const emailParam = req.params.id;
+    const updates = req.body;
+
+    if (!emailParam.includes("@")) return res.status(400).json({ message: "Email is required" });
+
+    // First, get existing document
+    const getResponse = await axios.get(
+      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_doc/${encodeURIComponent(emailParam)}`,
+      { auth: AUTH }
     );
 
-    if (!account) return res.status(404).json({ message: "Record not found" });
+    if (!getResponse.data.found) return res.status(404).json({ message: "Record not found" });
 
-    res
-      .status(200)
-      .json({ account, message: "Email account updated successfully" });
+    // Merge updates with existing data
+    const existingData = getResponse.data._source;
+    const updatedData = {
+      ...existingData,
+      ...updates,
+      updated_at: new Date().toISOString()
+    };
+
+    // Update document in OpenSearch
+    await axios.put(
+      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_doc/${encodeURIComponent(emailParam)}`,
+      updatedData,
+      { auth: AUTH }
+    );
+
+    res.status(200).json({ account: updatedData, message: "Email account updated successfully" });
   } catch (err) {
+    if (err.response?.status === 404) {
+      return res.status(404).json({ message: "Record not found" });
+    }
+    console.error("updateEmailAccount error:", err.response?.data || err.message);
     res.status(500).json({ message: "Error updating record" });
   }
 };
 
-// DELETE
+// ====== DELETE SINGLE EMAIL ACCOUNT ======
 exports.deleteEmailAccount = async (req, res) => {
   try {
-    const result = await EmailAccount.findByIdAndDelete(req.params.id);
-    if (!result) return res.status(404).json({ message: "Record not found" });
+    const email = req.params.id;
 
-    res.json({ message: "Record deleted" });
+    if (!email.includes("@")) return res.status(400).json({ message: "Please provide valid email" });
+
+    // Delete document from OpenSearch
+    await axios.delete(
+      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_doc/${encodeURIComponent(email)}`,
+      { auth: AUTH }
+    );
+
+    res.json({ message: "Record deleted successfully" });
   } catch (err) {
+    if (err.response?.status === 404) {
+      return res.status(404).json({ message: "Record not found" });
+    }
+    console.error("deleteEmailAccount error:", err.response?.data || err.message);
     res.status(500).json({ message: "Error deleting record" });
   }
 };
 
+// ====== BULK DELETE ======
 exports.bulkDeleteEmailAccounts = async (req, res) => {
   try {
-    const { ids } = req.body;
+    const { emails } = req.body;
 
-    // Validate input
-    if (!ids || !Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({ message: "No IDs provided" });
-    }
-    // Perform bulk delete
-    const result = await EmailAccount.deleteMany({ _id: { $in: ids } });
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ message: "No records found to delete" });
+    if (!emails || !Array.isArray(emails) || emails.length === 0)
+      return res.status(400).json({ message: "No emails provided" });
+
+    const invalid = emails.filter(e => !e.includes("@"));
+    if (invalid.length > 0) return res.status(400).json({ message: "Invalid emails found", invalid });
+
+    // Prepare bulk delete operations
+    const bulkOperations = [];
+    emails.forEach(email => {
+      bulkOperations.push({ delete: { _index: OPENSEARCH_INDEX, _id: encodeURIComponent(email) } });
+    });
+
+    // Execute bulk delete
+    const bulkBody = bulkOperations.map(op => JSON.stringify(op)).join('\n') + '\n';
+    const response = await axios.post(
+      `${OPENSEARCH_URL}/_bulk`,
+      bulkBody,
+      { 
+        auth: AUTH,
+        headers: { 'Content-Type': 'application/x-ndjson' }
+      }
+    );
+
+    // Check for errors in bulk response
+    const errors = response.data.items.filter(item => item.delete && item.delete.error);
+    if (errors.length > 0) {
+      console.error("Bulk delete errors:", errors);
     }
 
-    res.json({
-      message: `${result.deletedCount} record(s) deleted successfully`,
+    const deletedCount = response.data.items.filter(item => item.delete && item.delete.result === 'deleted').length;
+
+    res.json({ 
+      message: `${deletedCount} records deleted successfully`,
+      totalRequested: emails.length,
+      actuallyDeleted: deletedCount
     });
   } catch (err) {
-    console.error("Bulk delete error:", err);
+    console.error("bulkDeleteEmailAccounts error:", err.response?.data || err.message);
     res.status(500).json({ message: "Error deleting records" });
   }
 };
 
-
-
-// DELETE duplicate email accounts, keep the first created one
-
+// ====== DELETE DUPLICATES ======
 exports.deleteDuplicateEmailAccounts = async (req, res) => {
   try {
-    let totalDeleted = 0;
-    let totalProcessed = 0;
-    const batchSize = 5000;
-    let skip = 0;
-    let hasMore = true;
-
-    console.log("Starting batch duplicate deletion process...");
-
-    while (hasMore) {
-      // Fetch batch of 500 records
-      const batch = await EmailAccount.find({})
-        .sort({ createdAt: 1 }) // Process oldest first
-        .skip(skip)
-        .limit(batchSize)
-        .select('_id email createdAt')
-        .lean();
-
-      if (batch.length === 0) {
-        hasMore = false;
-        break;
-      }
-
-      console.log(`Processing batch ${skip / batchSize + 1} with ${batch.length} records`);
-
-      // Group current batch by email to find duplicates within this batch
-      const emailGroups = {};
-      
-      // Group records by email
-      batch.forEach(record => {
-        if (!emailGroups[record.email]) {
-          emailGroups[record.email] = [];
-        }
-        emailGroups[record.email].push(record);
-      });
-
-      // Process duplicates within this batch
-      const deletionPromises = [];
-      let batchDeleted = 0;
-
-      for (const [email, records] of Object.entries(emailGroups)) {
-        // If multiple records with same email in this batch
-        if (records.length > 1) {
-          // Sort by creation date (oldest first)
-          records.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-          
-          // Keep the oldest, delete the rest from this batch
-          const idsToDelete = records.slice(1).map(record => record._id);
-          
-          if (idsToDelete.length > 0) {
-            deletionPromises.push(
-              EmailAccount.deleteMany({ _id: { $in: idsToDelete } })
-                .then(result => {
-                  batchDeleted += result.deletedCount;
-                })
-                .catch(err => {
-                  console.error(`Error deleting duplicates for email ${email}:`, err);
-                })
-            );
+    // Find duplicate emails using terms aggregation
+    const aggBody = {
+      size: 0,
+      aggs: {
+        duplicate_emails: {
+          terms: {
+            field: "email.keyword",
+            min_doc_count: 2,
+            size: 1000
           }
         }
       }
+    };
 
-      // Wait for all deletions in current batch to complete
-      if (deletionPromises.length > 0) {
-        await Promise.all(deletionPromises);
-        totalDeleted += batchDeleted;
-      }
+    const { data } = await axios.post(
+      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
+      aggBody,
+      { auth: AUTH }
+    );
 
-      totalProcessed += batch.length;
-      skip += batchSize;
+    const duplicates = data.aggregations.duplicate_emails.buckets.map(bucket => bucket.key);
+    let deletedCount = 0;
 
-      console.log(`Batch ${skip / batchSize} completed: Processed ${batch.length} records, deleted ${batchDeleted} duplicates`);
+    // For each duplicate, keep the most recent one (based on created_at) and delete the rest
+    for (const email of duplicates) {
+      // Get all documents with this email, sorted by created_at
+      const searchBody = {
+        query: {
+          term: { "email.keyword": email }
+        },
+        sort: [
+          { created_at: "desc" }
+        ]
+      };
+
+      const searchResponse = await axios.post(
+        `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
+        searchBody,
+        { auth: AUTH }
+      );
+
+      const hits = searchResponse.data.hits.hits;
       
-      // Add small delay between batches to prevent overwhelming the database
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Keep the first (most recent) document, delete the rest
+      if (hits.length > 1) {
+        const docsToDelete = hits.slice(1); // All except the first one
+        
+        // Prepare bulk delete for duplicates
+        const bulkOperations = [];
+        docsToDelete.forEach(hit => {
+          bulkOperations.push({ delete: { _index: OPENSEARCH_INDEX, _id: hit._id } });
+        });
+
+        if (bulkOperations.length > 0) {
+          const bulkBody = bulkOperations.map(op => JSON.stringify(op)).join('\n') + '\n';
+          const bulkResponse = await axios.post(
+            `${OPENSEARCH_URL}/_bulk`,
+            bulkBody,
+            { 
+              auth: AUTH,
+              headers: { 'Content-Type': 'application/x-ndjson' }
+            }
+          );
+          
+          deletedCount += docsToDelete.length;
+        }
+      }
     }
 
-    res.json({
-      message: `Successfully processed ${totalProcessed} records and deleted ${totalDeleted} duplicate email account(s)`,
-      totalProcessed,
-      totalDeleted
+    res.json({ 
+      message: `Deleted ${deletedCount} duplicate records`, 
+      duplicatesFound: duplicates.length,
+      actuallyDeleted: deletedCount 
     });
-
   } catch (err) {
-    console.error("Delete duplicates error:", err);
-    res.status(500).json({ message: "Error deleting duplicate records" });
+    console.error("deleteDuplicateEmailAccounts error:", err.response?.data || err.message);
+    res.status(500).json({ message: "Error deleting duplicates" });
   }
 };

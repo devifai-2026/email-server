@@ -6,10 +6,22 @@ const Card = require("../models/dashboardcard.model");
 
 const User = require("../models/user.model");
 
-const EmailAccount = require("../models/emailaccount.model");
+const dynamoService = require("../services/dynamodb-service.js");
 
 const Plan = require("../models/plans.model");
 
+const { connectPostgres } = require("../config/db.js");
+
+
+const axios = require("axios");
+const OPENSEARCH_INDEX = "email_accounts_v2";
+const OPENSEARCH_URL =
+  "https://vpc-email-search-uzaqvpiyheutyfluip6kc244fu.ap-south-1.es.amazonaws.com";
+
+const AUTH = {
+  username: "postgres",
+  password: "emailFinder@2025"
+};
 // Create token
 exports.createOrUpdateToken = async (req, res) => {
   try {
@@ -120,39 +132,35 @@ exports.deleteCard = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
 exports.getDashboardStats = async (req, res) => {
   try {
-    // Counts
-    const totalUsersPromise = User.countDocuments();
-    const activeUsersPromise = User.countDocuments({ isActive: true });
+    // Use OpenSearch to get email accounts count
+    const body = {
+      size: 0,
+      query: {
+        match_all: {}
+      }
+    };
 
-    const totalEmailAccountsPromise = EmailAccount.countDocuments();
-    const totalPlansPromise = Plan.countDocuments();
+    const { data } = await axios.post(
+      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_count`,
+      body,
+      { auth: AUTH }
+    );
 
-    // Total transaction amount
-    const totalTransactionAmountPromise = Payment.aggregate([
-      {
-        $group: {
-          _id: null,
-          totalAmount: { $sum: "$amount" },
-        },
-      },
-    ]);
+    const totalEmailAccounts = data.count || 0;
 
     const [
       totalUsers,
       activeUsers,
-
-      totalEmailAccounts,
       totalPlans,
-      totalTransactionAmountResult,
+      totalTransactionAmountResult
     ] = await Promise.all([
-      totalUsersPromise,
-      activeUsersPromise,
-
-      totalEmailAccountsPromise,
-      totalPlansPromise,
-      totalTransactionAmountPromise,
+      User.countDocuments(),
+      User.countDocuments({ isActive: true }),
+      Plan.countDocuments(),
+      Payment.aggregate([{ $group: { _id: null, totalAmount: { $sum: "$amount" } } }])
     ]);
 
     const totalTransactionAmount =
@@ -160,7 +168,7 @@ exports.getDashboardStats = async (req, res) => {
         ? totalTransactionAmountResult[0].totalAmount
         : 0;
 
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
       data: {
         totalUsers,
@@ -171,11 +179,8 @@ exports.getDashboardStats = async (req, res) => {
         totalTransactionAmount,
       },
     });
-  } catch (error) {
-    console.error("Error fetching dashboard stats:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error while fetching dashboard stats",
-    });
+  } catch (err) {
+    console.error("Error fetching dashboard stats:", err.response?.data || err.message);
+    res.status(500).json({ success: false, message: "Server error while fetching dashboard stats" });
   }
 };

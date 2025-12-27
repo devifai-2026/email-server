@@ -32,6 +32,10 @@
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "pg": "^8.16.3",
+<<<<<<< HEAD
+=======
+    "pg-pool": "^3.10.1",
+>>>>>>> b94aa3330dea23d42a41287ade2af8861c76b3b9
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
