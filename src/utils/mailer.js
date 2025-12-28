@@ -165,144 +165,246 @@ exports.sendSubscriptionSuccessEmail = async (
   paymentMethod,
   transactionId
 ) => {
-  const subject = "🎉 Welcome - subscription activated!";
+  const subject = "✨ Subscription Activated | Your Reach Finder Premium Access";
   const text = `Hi ${fullname}, your subscription to the ${packageName} plan has been successfully activated. Enjoy all the premium features of Reach Finder.`;
 
-  const baseStyle = `
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background-color: #f5f7fa;
-    padding: 20px;
-  `;
-  const cardStyle = `
-    max-width: 500px;
-    margin: 0 auto;
-    background-color: #ffffff;
-    border-radius: 12px;
-    padding: 24px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-    text-align: center;
-  `;
-  const btnStyle = `
-    display: inline-block;
-    background-color: #16A34A;
-    color: #ffffff;
-    padding: 12px 24px;
-    border-radius: 6px;
-    text-decoration: none;
-    font-weight: bold;
-    margin-top: 16px;
-  `;
-  const packageStyle = `
-    display: inline-block;
-    background-color: #DCFCE7;
-    color: #166534;
-    padding: 8px 16px;
-    border-radius: 20px;
-    font-weight: 600;
-    margin-top: 12px;
-  `;
-
   const html = `
-  <div style="${baseStyle}">
-    <div style="
-      max-width: 650px;
-      margin: 0 auto;
-      background-color: #ffffff;
-      border-radius: 12px;
-      padding: 32px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      color: #1f2937;
-    ">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reach Finder | Subscription Confirmation</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body style="margin: 0; padding: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
 
-      <!-- HEADER -->
-      <h1 style="color: #2563eb; text-align:center; margin-bottom: 8px;">Reach Finder</h1>
-      <p style="text-align:center; color:#6b7280; margin-top:0;">Official Invoice & Payment Confirmation</p>
-
-      <hr style="margin: 24px 0; border: 0; height: 1px; background-color: #e5e7eb;" />
-
-      <!-- CUSTOMER INFO -->
-      <h3 style="margin-bottom: 6px;">Billed To:</h3>
-      <p style="margin:0; font-size:14px;">
-        <b>${fullname}</b><br/>
-        ${email}
-      </p>
-
-      <br/>
-
-      <!-- INVOICE SUMMARY -->
-      <table style="width:100%; border-collapse: collapse; margin-top: 16px;">
-        <tr>
-          <td style="padding: 10px; background:#f9fafb; font-weight:600;">Invoice Date</td>
-          <td style="padding: 10px; text-align:right;">${new Date().toLocaleDateString()}</td>
-        </tr>
-        <tr>
-          <td style="padding: 10px; background:#f9fafb; font-weight:600;">Payment Method</td>
-          <td style="padding: 10px; text-align:right;">${paymentMethod}</td>
-        </tr>
-        <tr>
-          <td style="padding: 10px; background:#f9fafb; font-weight:600;">Transaction ID</td>
-          <td style="padding: 10px; text-align:right;">${transactionId}</td>
-        </tr>
-        <tr>
-          <td style="padding: 10px; background:#f9fafb; font-weight:600;">Status</td>
-          <td style="padding: 10px; text-align:right; color:#16A34A; font-weight:bold;">${status}</td>
-        </tr>
-      </table>
-
-      <br/>
-
-      <!-- PLAN DETAILS -->
-      <h3 style="margin-top: 30px;">Subscription Details</h3>
-      <table style="width:100%; border-collapse: collapse; margin-top: 8px;">
-        <thead>
-          <tr style="background:#2563eb; color:white;">
-            <th style="padding: 12px; text-align:left;">Plan</th>
-            <th style="padding: 12px; text-align:right;">Price</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr style="background:#f3f4f6;">
-            <td style="padding: 12px;">${packageName}</td>
-            <td style="padding: 12px; text-align:right;">${price} ${currency}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <br/>
-
-      <!-- TOTAL -->
-      <table style="width:100%; margin-top: 18px;">
-        <tr>
-          <td style="font-size: 18px; font-weight:600;">Total Paid:</td>
-          <td style="font-size: 18px; font-weight:700; text-align:right; color:#2563eb;">
-            ${price} ${currency}
-          </td>
-        </tr>
-      </table>
-
-      <hr style="margin: 28px 0; border: 0; height: 1px; background-color: #e5e7eb;" />
-
-      <!-- CTA -->
-      <div style="text-align:center;">
-        <a href="${process.env.CLIENT_URL || "#"}" 
-          style="
-            ${btnStyle};
-            background-color:#2563eb;
-            font-size:16px;
-          ">
-          Go to Dashboard 🚀
-        </a>
+  <!-- Email Container -->
+  <div style="max-width: 640px; margin: 40px auto; padding: 20px;">
+    
+    <!-- Premium Card -->
+    <div style="background: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);">
+      
+      <!-- Gradient Header -->
+      <div style="background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); padding: 48px 40px 32px; text-align: center; position: relative;">
+        
+        <!-- Decorative Elements -->
+        <div style="position: absolute; top: 20px; right: 30px; width: 40px; height: 40px; background: rgba(255,255,255,0.1); border-radius: 50%;"></div>
+        <div style="position: absolute; bottom: 40px; left: 30px; width: 24px; height: 24px; background: rgba(255,255,255,0.1); border-radius: 50%;"></div>
+        
+        <!-- Logo/Brand -->
+        <div style="margin-bottom: 24px;">
+          <div style="display: inline-block; background: white; padding: 12px 24px; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.1);">
+            <h1 style="margin: 0; color: #2563eb; font-size: 28px; font-weight: 700; letter-spacing: -0.5px;">
+              Reach Finder
+            </h1>
+          </div>
+        </div>
+        
+        <!-- Success Icon -->
+        <div style="background: white; width: 80px; height: 80px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 24px; box-shadow: 0 12px 32px rgba(0,0,0,0.15);">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M20 6L9 17L4 12" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        
+        <h2 style="color: white; margin: 0 0 8px; font-size: 28px; font-weight: 700;">
+          Payment Confirmed!
+        </h2>
+        <p style="color: rgba(255,255,255,0.9); margin: 0; font-size: 16px; font-weight: 400;">
+          Your premium subscription is now active
+        </p>
       </div>
 
+      <!-- Invoice Details -->
+      <div style="padding: 40px;">
+        
+        <!-- Recipient Info -->
+        <div style="display: flex; align-items: center; margin-bottom: 32px; padding-bottom: 24px; border-bottom: 1px solid #f3f4f6;">
+          <div style="flex: 1;">
+            <h3 style="margin: 0 0 8px; color: #1f2937; font-size: 18px; font-weight: 600;">
+              Billed To
+            </h3>
+            <p style="margin: 0; color: #4b5563; font-size: 15px;">
+              <strong>${fullname}</strong><br/>
+              ${email}
+            </p>
+          </div>
+          <div style="text-align: right;">
+            <div style="display: inline-block; background: #f0f9ff; color: #0369a1; padding: 8px 16px; border-radius: 12px; font-weight: 600; font-size: 14px;">
+              Premium Member
+            </div>
+          </div>
+        </div>
 
+        <!-- Invoice Summary -->
+        <div style="background: #f9fafb; border-radius: 16px; padding: 24px; margin-bottom: 32px;">
+          <h3 style="margin: 0 0 20px; color: #1f2937; font-size: 18px; font-weight: 600;">
+            Invoice Summary
+          </h3>
+          
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
+            <div>
+              <p style="margin: 0 0 4px; color: #6b7280; font-size: 13px; font-weight: 500; text-transform: uppercase;">
+                Invoice Date
+              </p>
+              <p style="margin: 0; color: #1f2937; font-weight: 600;">
+                ${new Date().toLocaleDateString('en-US', { 
+                  weekday: 'long', 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                })}
+              </p>
+            </div>
+            
+            <div>
+              <p style="margin: 0 0 4px; color: #6b7280; font-size: 13px; font-weight: 500; text-transform: uppercase;">
+                Payment Method
+              </p>
+              <p style="margin: 0; color: #1f2937; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 24px; height: 24px; background: #f3f4f6; border-radius: 6px; display: flex; align-items: center; justify-content: center;">
+                  💳
+                </span>
+                ${paymentMethod}
+              </p>
+            </div>
+            
+            <div>
+              <p style="margin: 0 0 4px; color: #6b7280; font-size: 13px; font-weight: 500; text-transform: uppercase;">
+                Transaction ID
+              </p>
+              <p style="margin: 0; color: #1f2937; font-weight: 600; font-family: monospace; font-size: 14px;">
+                ${transactionId}
+              </p>
+            </div>
+            
+            <div>
+              <p style="margin: 0 0 4px; color: #6b7280; font-size: 13px; font-weight: 500; text-transform: uppercase;">
+                Status
+              </p>
+              <p style="margin: 0;">
+                <span style="display: inline-flex; align-items: center; background: #d1fae5; color: #065f46; padding: 6px 12px; border-radius: 20px; font-weight: 600; font-size: 14px;">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="margin-right: 6px;">
+                    <circle cx="8" cy="8" r="6" fill="#10b981"/>
+                  </svg>
+                  ${status}
+                </span>
+              </p>
+            </div>
+          </div>
+        </div>
 
-      <p style="text-align:center; color:#6b7280; margin-top:18px;">
-        Thank you for your purchase! We're excited to have you with us.
+        <!-- Plan Details -->
+        <div style="border: 1px solid #e5e7eb; border-radius: 16px; overflow: hidden; margin-bottom: 32px;">
+          <div style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 20px 24px; border-bottom: 1px solid #e5e7eb;">
+            <h3 style="margin: 0; color: #1f2937; font-size: 18px; font-weight: 600;">
+              Subscription Plan
+            </h3>
+          </div>
+          
+          <div style="padding: 24px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
+              <div>
+                <h4 style="margin: 0 0 8px; color: #1f2937; font-size: 20px; font-weight: 700;">
+                  ${packageName}
+                </h4>
+                <p style="margin: 0; color: #6b7280; font-size: 14px;">
+                  Full access to all premium features
+                </p>
+              </div>
+              <div style="background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); color: white; padding: 12px 24px; border-radius: 12px; text-align: center;">
+                <div style="font-size: 12px; opacity: 0.9; margin-bottom: 4px;">
+                  Total Amount
+                </div>
+                <div style="font-size: 28px; font-weight: 800;">
+                  ${currency} ${price}
+                </div>
+              </div>
+            </div>
+            
+            <!-- Features List -->
+            <div style="background: #f8fafc; border-radius: 12px; padding: 20px; margin-top: 24px;">
+              <h5 style="margin: 0 0 12px; color: #4b5563; font-size: 14px; font-weight: 600; text-transform: uppercase;">
+                Included Features:
+              </h5>
+              <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="color: #10b981;">✓</span>
+                  <span style="color: #374151; font-size: 14px;">Unlimited Searches</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="color: #10b981;">✓</span>
+                  <span style="color: #374151; font-size: 14px;">Advanced Filters</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="color: #10b981;">✓</span>
+                  <span style="color: #374151; font-size: 14px;">Priority Support</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="color: #10b981;">✓</span>
+                  <span style="color: #374151; font-size: 14px;">Export Data</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Total Section -->
+        <div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-radius: 16px; padding: 24px; text-align: center; margin-bottom: 40px;">
+          <p style="margin: 0 0 8px; color: #92400e; font-size: 14px; font-weight: 500;">
+            FINAL AMOUNT PAID
+          </p>
+          <p style="margin: 0; color: #92400e; font-size: 40px; font-weight: 800; letter-spacing: -1px;">
+            ${currency} ${price}
+          </p>
+          <p style="margin: 12px 0 0; color: #92400e; opacity: 0.8; font-size: 14px;">
+            Thank you for your trust in our service
+          </p>
+        </div>
+
+        <!-- CTA Button -->
+        <div style="text-align: center; margin-bottom: 32px;">
+          <a href="${process.env.CLIENT_URL || '#'}" 
+            style="display: inline-block; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; text-decoration: none; padding: 18px 40px; border-radius: 12px; font-weight: 700; font-size: 16px; box-shadow: 0 8px 24px rgba(16, 185, 129, 0.3); transition: all 0.3s ease;"
+            onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 12px 28px rgba(16, 185, 129, 0.4)';"
+            onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 8px 24px rgba(16, 185, 129, 0.3)';">
+            🚀 Access Your Dashboard
+          </a>
+          <p style="margin: 16px 0 0; color: #6b7280; font-size: 14px;">
+            Your premium features are ready to use
+          </p>
+        </div>
+
+        <!-- Footer -->
+        <div style="border-top: 1px solid #e5e7eb; padding-top: 32px; text-align: center;">
+          <p style="margin: 0 0 16px; color: #4b5563; font-size: 14px;">
+            Need help? <a href="mailto:support@reachfinder.com" style="color: #2563eb; text-decoration: none; font-weight: 600;">Contact Support</a>
+          </p>
+          <div style="color: #9ca3af; font-size: 13px; line-height: 1.6;">
+            <p style="margin: 0;">
+              This is an automated receipt for your records.<br/>
+              © ${new Date().getFullYear()} Reach Finder. All rights reserved.
+            </p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Watermark -->
+    <div style="text-align: center; margin-top: 32px;">
+      <p style="color: rgba(255,255,255,0.5); font-size: 12px; margin: 0;">
+        Premium Subscription Receipt • Reach Finder
       </p>
     </div>
   </div>
-`;
+
+</body>
+</html>
+  `;
 
   return exports.sendEmail({ to: email, subject, text, html });
 };
