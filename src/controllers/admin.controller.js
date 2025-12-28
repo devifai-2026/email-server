@@ -134,15 +134,21 @@ exports.deleteCard = async (req, res) => {
 };
 
 exports.getDashboardStats = async (req, res) => {
+  let totalEmailAccounts = 0; // ✅ Default to 0
+
   try {
-    // ✅ AWS OpenSearch: GET _count (NO BODY)
+    // AWS OpenSearch: GET _count (NO BODY)
     const { data } = await axios.get(
       `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_count`,
-      { auth: AUTH }
+      { 
+        auth: AUTH,
+        validateStatus: (status) => status < 500 || status === 404 // ✅ Don't throw on 404 (index missing = 0)
+      }
     );
 
-    const totalEmailAccounts = data.count || 0;
+    totalEmailAccounts = data.count || 0; // ✅ Override if successful response
 
+    // MongoDB queries (unchanged)
     const [
       totalUsers,
       activeUsers,
@@ -168,20 +174,57 @@ exports.getDashboardStats = async (req, res) => {
         totalUsers,
         activeUsers,
         inactiveUsers: totalUsers - activeUsers,
-        totalEmailAccounts,
+        totalEmailAccounts, // ✅ Always 0 when index missing
         totalPlans,
         totalTransactionAmount
       }
     });
   } catch (err) {
-    console.error(
-      "Error fetching dashboard stats:",
-      err.response?.data || err.message
+    // ✅ OpenSearch failed (404/missing index) → totalEmailAccounts stays 0
+    console.warn(
+      "OpenSearch unavailable (index missing=0 emails):",
+      err.response?.data?.error?.type || err.message
     );
-    res.status(500).json({
-      success: false,
-      message: "Server error while fetching dashboard stats"
-    });
+
+    // ✅ Still fetch MongoDB stats (don't fail entire dashboard)
+    try {
+      const [
+        totalUsers,
+        activeUsers,
+        totalPlans,
+        totalTransactionAmountResult
+      ] = await Promise.all([
+        User.countDocuments(),
+        User.countDocuments({ isActive: true }),
+        Plan.countDocuments(),
+        Payment.aggregate([
+          { $group: { _id: null, totalAmount: { $sum: "$amount" } } }
+        ])
+      ]);
+
+      const totalTransactionAmount =
+        totalTransactionAmountResult.length > 0
+          ? totalTransactionAmountResult[0].totalAmount
+          : 0;
+
+      res.status(200).json({ // ✅ 200 even with OpenSearch error
+        success: true,
+        data: {
+          totalUsers,
+          activeUsers,
+          inactiveUsers: totalUsers - activeUsers,
+          totalEmailAccounts: 0, // ✅ Explicit 0
+          totalPlans,
+          totalTransactionAmount
+        }
+      });
+    } catch (dbErr) {
+      console.error("MongoDB dashboard stats failed:", dbErr.message);
+      res.status(500).json({
+        success: false,
+        message: "Server error while fetching dashboard stats"
+      });
+    }
   }
 };
 
