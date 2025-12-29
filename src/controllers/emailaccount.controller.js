@@ -402,7 +402,8 @@ exports.bulkDeleteEmailAccounts = async (req, res) => {
         invalid: invalidEmails 
       });
     }
-    const pgPool = getPgPool()
+    
+    const pgPool = getPgPool();
     const client = await pgPool.connect();
     
     try {
@@ -411,16 +412,17 @@ exports.bulkDeleteEmailAccounts = async (req, res) => {
       // Delete from PostgreSQL using IN clause
       const placeholders = emails.map((_, i) => `$${i + 1}`).join(',');
       const deletePgQuery = `
-  DELETE FROM email_accounts 
-  WHERE email IN (${placeholders})
-  RETURNING email
-`;
+        DELETE FROM email_accounts 
+        WHERE email IN (${placeholders})
+        RETURNING email
+      `;
       
       const pgResult = await client.query(deletePgQuery, emails);
       const deletedFromPg = pgResult.rows.map(row => row.email);
       
       if (deletedFromPg.length === 0) {
         await client.query('ROLLBACK');
+        client.release();
         return res.status(404).json({ 
           message: "No records found in database",
           requested: emails.length,
@@ -428,73 +430,112 @@ exports.bulkDeleteEmailAccounts = async (req, res) => {
         });
       }
       
+      console.log(`Deleted ${deletedFromPg.length} emails from PostgreSQL:`, deletedFromPg);
+      
       // Delete from OpenSearch using bulk API
       const bulkOperations = [];
       deletedFromPg.forEach(email => {
+        // Clean the email for OpenSearch ID - remove special characters that might cause issues
+        const emailId = email.toLowerCase().trim();
+        console.log(`Preparing to delete from OpenSearch: ${email} -> ID: ${emailId}`);
+        
         bulkOperations.push({ 
           delete: { 
             _index: OPENSEARCH_INDEX, 
-            _id: encodeURIComponent(email) 
+            _id: emailId  // Try without encoding first
           } 
         });
       });
       
       const bulkBody = bulkOperations.map(op => JSON.stringify(op)).join('\n') + '\n';
-      const bulkResponse = await axios.post(
-        `${OPENSEARCH_URL}/_bulk`,
-        bulkBody,
-        { 
-          auth: AUTH,
-          headers: { 'Content-Type': 'application/x-ndjson' }
-        }
-      );
+      console.log('OpenSearch bulk request body:', bulkBody);
       
-      // Check OpenSearch deletion results
-      const osErrors = bulkResponse.data.items.filter(item => item.delete && item.delete.error);
-      const deletedFromOS = bulkResponse.data.items.filter(
-        item => item.delete && item.delete.result === 'deleted'
-      ).length;
-      
-      // If there are OpenSearch errors, decide whether to rollback
-      if (osErrors.length > 0) {
-        console.error("OpenSearch bulk delete errors:", osErrors);
-        // Option 1: Commit anyway (PostgreSQL deletions succeeded)
-        // Option 2: Rollback on critical errors
+      try {
+        const bulkResponse = await axios.post(
+          `${OPENSEARCH_URL}/_bulk`,
+          bulkBody,
+          { 
+            auth: AUTH,
+            headers: { 
+              'Content-Type': 'application/x-ndjson',
+              'Content-Length': Buffer.byteLength(bulkBody)
+            },
+            timeout: 30000 // 30 second timeout
+          }
+        );
         
-        // For now, we'll commit PostgreSQL deletions and report OS errors
-        // You can change this based on your requirements
+        console.log('OpenSearch bulk response:', JSON.stringify(bulkResponse.data, null, 2));
+        
+        // Check OpenSearch deletion results
+        const osErrors = bulkResponse.data.items.filter(item => item.delete && item.delete.error);
+        const deletedFromOS = bulkResponse.data.items.filter(
+          item => item.delete && item.delete.result === 'deleted'
+        ).length;
+        
+        const notDeletedFromOS = bulkResponse.data.items.filter(
+          item => item.delete && item.delete.result === 'not_found'
+        ).length;
+        
+        console.log(`OpenSearch results: ${deletedFromOS} deleted, ${notDeletedFromOS} not found, ${osErrors.length} errors`);
+        
+        if (osErrors.length > 0) {
+          console.error("OpenSearch bulk delete errors:", osErrors);
+        }
+        
+        await client.query('COMMIT');
+        
+        // Find which emails weren't deleted from PostgreSQL
+        const notFoundEmails = emails.filter(email => !deletedFromPg.includes(email));
+        
+        res.json({ 
+          message: "Bulk delete completed",
+          stats: {
+            requested: emails.length,
+            deletedFromPostgres: deletedFromPg.length,
+            deletedFromOpenSearch: deletedFromOS,
+            notFoundInOpenSearch: notDeletedFromOS,
+            notFoundInPostgres: notFoundEmails.length,
+            openSearchErrors: osErrors.length
+          },
+          details: {
+            deletedEmails: deletedFromPg,
+            notFoundEmails: notFoundEmails.length > 0 ? notFoundEmails : undefined,
+            openSearchErrorDetails: osErrors.length > 0 ? osErrors.map(e => e.delete.error) : undefined
+          }
+        });
+        
+      } catch (osError) {
+        console.error('OpenSearch API error:', {
+          message: osError.message,
+          response: osError.response?.data,
+          status: osError.response?.status,
+          headers: osError.response?.headers
+        });
+        
+        // Rollback PostgreSQL deletion since OpenSearch failed
+        await client.query('ROLLBACK');
+        
+        throw new Error(`OpenSearch deletion failed: ${osError.message}`);
       }
       
-      await client.query('COMMIT');
-      
-      // Find which emails weren't deleted from PostgreSQL
-      const notFoundEmails = emails.filter(email => !deletedFromPg.includes(email));
-      
-      res.json({ 
-        message: "Bulk delete completed",
-        stats: {
-          requested: emails.length,
-          deletedFromPostgres: deletedFromPg.length,
-          deletedFromOpenSearch: deletedFromOS,
-          notFoundInPostgres: notFoundEmails.length,
-          openSearchErrors: osErrors.length
-        },
-        details: {
-          deletedEmails: deletedFromPg,
-          notFoundEmails: notFoundEmails.length > 0 ? notFoundEmails : undefined,
-          openSearchErrorDetails: osErrors.length > 0 ? osErrors.map(e => e.delete.error) : undefined
-        }
-      });
-      
     } catch (error) {
-      await client.query('ROLLBACK');
+      // Rollback already handled in the OpenSearch catch block
+      if (error.message.includes('OpenSearch deletion failed')) {
+        // Already rolled back
+      } else {
+        await client.query('ROLLBACK');
+      }
       throw error;
     } finally {
       client.release();
     }
     
   } catch (err) {
-    console.error("bulkDeleteEmailAccounts error:", err.response?.data || err.message);
+    console.error("bulkDeleteEmailAccounts error:", {
+      message: err.message,
+      response: err.response?.data,
+      stack: err.stack
+    });
     
     // Handle specific error cases
     if (err.response?.status === 404) {
@@ -503,11 +544,11 @@ exports.bulkDeleteEmailAccounts = async (req, res) => {
     
     res.status(500).json({ 
       message: "Error deleting records",
-      error: err.message 
+      error: err.message,
+      details: err.response?.data || undefined
     });
   }
 };
-
 // ====== DELETE DUPLICATES ======
 exports.deleteDuplicateEmailAccounts = async (req, res) => {
   const client = await pgPool.connect();
