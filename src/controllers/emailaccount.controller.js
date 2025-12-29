@@ -1,5 +1,6 @@
 // controllers/emailAccount.controller.js
 const axios = require("axios");
+    const { pgPool } = require("../config/db.js");
 const OPENSEARCH_INDEX = "email_accounts";
 const OPENSEARCH_URL =
   "https://vpc-email-search-uzaqvpiyheutyfluip6kc244fu.ap-south-1.es.amazonaws.com";
@@ -334,109 +335,175 @@ exports.deleteEmailAccount = async (req, res) => {
 };
 
 // ====== BULK DELETE ======
+// ====== BULK DELETE ======
 exports.bulkDeleteEmailAccounts = async (req, res) => {
   try {
-    const { emails } = req.body;
+    const email = req.params.id;
 
-    if (!emails || !Array.isArray(emails) || emails.length === 0)
-      return res.status(400).json({ message: "No emails provided" });
-
-    const invalid = emails.filter(e => !e.includes("@"));
-    if (invalid.length > 0) return res.status(400).json({ message: "Invalid emails found", invalid });
-
-    // Prepare bulk delete operations
-    const bulkOperations = [];
-    emails.forEach(email => {
-      bulkOperations.push({ delete: { _index: OPENSEARCH_INDEX, _id: encodeURIComponent(email) } });
-    });
-
-    // Execute bulk delete
-    const bulkBody = bulkOperations.map(op => JSON.stringify(op)).join('\n') + '\n';
-    const response = await axios.post(
-      `${OPENSEARCH_URL}/_bulk`,
-      bulkBody,
-      { 
-        auth: AUTH,
-        headers: { 'Content-Type': 'application/x-ndjson' }
-      }
-    );
-
-    // Check for errors in bulk response
-    const errors = response.data.items.filter(item => item.delete && item.delete.error);
-    if (errors.length > 0) {
-      console.error("Bulk delete errors:", errors);
+    if (!email.includes("@")) {
+      return res.status(400).json({ message: "Please provide valid email" });
     }
 
-    const deletedCount = response.data.items.filter(item => item.delete && item.delete.result === 'deleted').length;
+    // Import PostgreSQL pool
 
-    res.json({ 
-      message: `${deletedCount} records deleted successfully`,
-      totalRequested: emails.length,
-      actuallyDeleted: deletedCount
-    });
+    const client = await pgPool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Delete from PostgreSQL
+      const pgResult = await client.query(
+        'DELETE FROM email_accounts WHERE email = $1 RETURNING email',
+        [email]
+      );
+      
+      if (pgResult.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ message: "Record not found in database" });
+      }
+      
+      // Delete from OpenSearch
+      await axios.delete(
+        `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_doc/${encodeURIComponent(email)}`,
+        { auth: AUTH }
+      );
+      
+      await client.query('COMMIT');
+      
+      res.json({ 
+        message: "Record deleted successfully from both databases",
+        email: email 
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      
+      // Check if it's a 404 from OpenSearch
+      if (error.response?.status === 404) {
+        // Record was deleted from PostgreSQL but not found in OpenSearch
+        // You might want to commit the PostgreSQL deletion anyway
+        await client.query('COMMIT');
+        return res.json({ 
+          message: "Record deleted from PostgreSQL but not found in OpenSearch",
+          email: email 
+        });
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+    
   } catch (err) {
-    console.error("bulkDeleteEmailAccounts error:", err.response?.data || err.message);
-    res.status(500).json({ message: "Error deleting records" });
+    console.error("deleteEmailAccount error:", err.response?.data || err.message);
+    
+    if (err.response?.status === 404) {
+      return res.status(404).json({ message: "Record not found" });
+    }
+    
+    res.status(500).json({ 
+      message: "Error deleting record",
+      error: err.message 
+    });
   }
 };
 
 // ====== DELETE DUPLICATES ======
 exports.deleteDuplicateEmailAccounts = async (req, res) => {
+  const client = await pgPool.connect();
+  
   try {
-    // Find duplicate emails using terms aggregation
-    const aggBody = {
-      size: 0,
-      aggs: {
-        duplicate_emails: {
-          terms: {
-            field: "email.keyword",
-            min_doc_count: 2,
-            size: 1000
-          }
-        }
+    await client.query('BEGIN');
+    
+    // 1. Find duplicates in PostgreSQL
+    const pgDuplicatesQuery = `
+      WITH duplicates AS (
+        SELECT email, 
+               created_at,
+               ROW_NUMBER() OVER (PARTITION BY email ORDER BY created_at DESC) as rn
+        FROM email_accounts
+      )
+      SELECT email, created_at
+      FROM duplicates 
+      WHERE rn > 1
+      ORDER BY email, created_at DESC
+    `;
+    
+    const pgResult = await client.query(pgDuplicatesQuery);
+    const allDuplicates = pgResult.rows;
+    
+    // Group duplicates by email
+    const duplicatesByEmail = {};
+    allDuplicates.forEach(row => {
+      if (!duplicatesByEmail[row.email]) {
+        duplicatesByEmail[row.email] = [];
       }
-    };
-
-    const { data } = await axios.post(
-      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
-      aggBody,
-      { auth: AUTH }
-    );
-
-    const duplicates = data.aggregations.duplicate_emails.buckets.map(bucket => bucket.key);
-    let deletedCount = 0;
-
-    // For each duplicate, keep the most recent one (based on created_at) and delete the rest
-    for (const email of duplicates) {
-      // Get all documents with this email, sorted by created_at
-      const searchBody = {
-        query: {
-          term: { "email.keyword": email }
-        },
-        sort: [
-          { created_at: "desc" }
-        ]
-      };
-
-      const searchResponse = await axios.post(
-        `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
-        searchBody,
-        { auth: AUTH }
-      );
-
-      const hits = searchResponse.data.hits.hits;
-      
-      // Keep the first (most recent) document, delete the rest
-      if (hits.length > 1) {
-        const docsToDelete = hits.slice(1); // All except the first one
+      duplicatesByEmail[row.email].push(row);
+    });
+    
+    let pgDeletedCount = 0;
+    let osDeletedCount = 0;
+    const failedDeletions = [];
+    
+    // 2. Process each duplicate group
+    for (const [email, duplicateRows] of Object.entries(duplicatesByEmail)) {
+      try {
+        // Keep the most recent record (first in array since we sorted DESC)
+        const keepRow = duplicateRows[0];
+        const deleteRows = duplicateRows.slice(1); // All older duplicates
         
-        // Prepare bulk delete for duplicates
-        const bulkOperations = [];
-        docsToDelete.forEach(hit => {
-          bulkOperations.push({ delete: { _index: OPENSEARCH_INDEX, _id: hit._id } });
-        });
-
-        if (bulkOperations.length > 0) {
+        // Delete from PostgreSQL
+        const placeholders = deleteRows.map((_, i) => `$${i + 1}`).join(',');
+        const deleteIds = deleteRows.map(row => row.id); // Assuming you have an 'id' column
+        
+        const deletePgQuery = `
+          DELETE FROM email_accounts 
+          WHERE id IN (${placeholders})
+          RETURNING id, email, created_at
+        `;
+        
+        const pgDeleteResult = await client.query(deletePgQuery, deleteIds);
+        pgDeletedCount += pgDeleteResult.rowCount;
+        
+        // Delete from OpenSearch
+        // First, find the OpenSearch documents for these duplicates
+        const searchBody = {
+          query: {
+            bool: {
+              must: [
+                { term: { "email.keyword": email } },
+                { 
+                  bool: {
+                    should: deleteRows.map(row => ({
+                      term: { "created_at": row.created_at.toISOString() }
+                    }))
+                  }
+                }
+              ]
+            }
+          },
+          size: 100
+        };
+        
+        const searchResponse = await axios.post(
+          `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
+          searchBody,
+          { auth: AUTH }
+        );
+        
+        const hitsToDelete = searchResponse.data.hits.hits;
+        
+        if (hitsToDelete.length > 0) {
+          // Prepare bulk delete
+          const bulkOperations = [];
+          hitsToDelete.forEach(hit => {
+            bulkOperations.push({ 
+              delete: { 
+                _index: OPENSEARCH_INDEX, 
+                _id: hit._id 
+              } 
+            });
+          });
+          
           const bulkBody = bulkOperations.map(op => JSON.stringify(op)).join('\n') + '\n';
           const bulkResponse = await axios.post(
             `${OPENSEARCH_URL}/_bulk`,
@@ -447,18 +514,59 @@ exports.deleteDuplicateEmailAccounts = async (req, res) => {
             }
           );
           
-          deletedCount += docsToDelete.length;
+          // Count successful deletions
+          const successfulDeletes = bulkResponse.data.items.filter(
+            item => item.delete && item.delete.result === 'deleted'
+          ).length;
+          
+          osDeletedCount += successfulDeletes;
+          
+          // Log any errors
+          const errors = bulkResponse.data.items.filter(
+            item => item.delete && item.delete.error
+          );
+          
+          if (errors.length > 0) {
+            console.warn(`OpenSearch deletion errors for ${email}:`, errors);
+            failedDeletions.push({
+              email,
+              errors: errors.map(e => e.delete.error)
+            });
+          }
         }
+        
+      } catch (emailError) {
+        console.error(`Error processing duplicates for ${email}:`, emailError.message);
+        failedDeletions.push({
+          email,
+          error: emailError.message
+        });
+        // Continue with next email instead of failing entire batch
       }
     }
-
+    
+    await client.query('COMMIT');
+    
     res.json({ 
-      message: `Deleted ${deletedCount} duplicate records`, 
-      duplicatesFound: duplicates.length,
-      actuallyDeleted: deletedCount 
+      message: "Duplicate cleanup completed",
+      stats: {
+        totalDuplicatesFound: allDuplicates.length,
+        duplicateEmails: Object.keys(duplicatesByEmail).length,
+        deletedFromPostgres: pgDeletedCount,
+        deletedFromOpenSearch: osDeletedCount,
+        failedOperations: failedDeletions.length
+      },
+      details: failedDeletions.length > 0 ? { failedDeletions } : undefined
     });
+    
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error("deleteDuplicateEmailAccounts error:", err.response?.data || err.message);
-    res.status(500).json({ message: "Error deleting duplicates" });
+    res.status(500).json({ 
+      message: "Error deleting duplicates",
+      error: err.message 
+    });
+  } finally {
+    client.release();
   }
 };
