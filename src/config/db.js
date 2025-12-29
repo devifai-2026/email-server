@@ -33,8 +33,31 @@ const connectPostgres = () => {
       connectionTimeoutMillis: 5000,
     });
 
-    pgPool.on("connect", () => console.log("PostgreSQL connected"));
-    pgPool.on("error", (err) => console.error("PostgreSQL pool error:", err));
+    pgPool.on("connect", (client) => {
+      console.log("PostgreSQL connected - New client acquired");
+    });
+    
+    pgPool.on("error", (err) => {
+      console.error("PostgreSQL pool error:", err);
+    });
+    
+    // Test connection immediately
+    pgPool.query('SELECT NOW()', (err, res) => {
+      if (err) {
+        console.error("PostgreSQL connection test failed:", err.message);
+      } else {
+        console.log("PostgreSQL connected successfully");
+        console.log("Connection test:", res.rows[0]);
+      }
+    });
+  }
+  return pgPool;
+};
+
+// Get the pool instance (use this in your controllers)
+const getPgPool = () => {
+  if (!pgPool) {
+    throw new Error("PostgreSQL pool not initialized. Call connectPostgres() first.");
   }
   return pgPool;
 };
@@ -42,5 +65,6 @@ const connectPostgres = () => {
 module.exports = {
   connectMongoDB,
   connectPostgres,
-  pgPool, // export the pool instance for query usage
+  getPgPool,  // Use this instead of directly exporting pgPool
+  pgPool,     // Keep for backward compatibility, but use getPgPool()
 };

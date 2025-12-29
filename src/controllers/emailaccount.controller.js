@@ -1,6 +1,8 @@
 // controllers/emailAccount.controller.js
 const axios = require("axios");
-    const { pgPool } = require("../config/db.js");
+// In your controller file
+const { getPgPool } = require('../config/db'); // Adjust path as needed
+
 const OPENSEARCH_INDEX = "email_accounts";
 const OPENSEARCH_URL =
   "https://vpc-email-search-uzaqvpiyheutyfluip6kc244fu.ap-south-1.es.amazonaws.com";
@@ -400,7 +402,7 @@ exports.bulkDeleteEmailAccounts = async (req, res) => {
         invalid: invalidEmails 
       });
     }
-
+    const pgPool = getPgPool()
     const client = await pgPool.connect();
     
     try {
