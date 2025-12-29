@@ -411,10 +411,10 @@ exports.bulkDeleteEmailAccounts = async (req, res) => {
       // Delete from PostgreSQL using IN clause
       const placeholders = emails.map((_, i) => `$${i + 1}`).join(',');
       const deletePgQuery = `
-        DELETE FROM email_accounts 
-        WHERE email IN (${placeholders})
-        RETURNING email, id
-      `;
+  DELETE FROM email_accounts 
+  WHERE email IN (${placeholders})
+  RETURNING email
+`;
       
       const pgResult = await client.query(deletePgQuery, emails);
       const deletedFromPg = pgResult.rows.map(row => row.email);
