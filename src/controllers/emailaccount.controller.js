@@ -314,37 +314,11 @@ exports.updateEmailAccount = async (req, res) => {
 // ====== DELETE SINGLE EMAIL ACCOUNT ======
 exports.deleteEmailAccount = async (req, res) => {
   try {
-    const email = req.params.id;
+    const email = req.params.id; // This is for single deletion via URL parameter
 
-    if (!email.includes("@")) return res.status(400).json({ message: "Please provide valid email" });
-
-    // Delete document from OpenSearch
-    await axios.delete(
-      `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_doc/${encodeURIComponent(email)}`,
-      { auth: AUTH }
-    );
-
-    res.json({ message: "Record deleted successfully" });
-  } catch (err) {
-    if (err.response?.status === 404) {
-      return res.status(404).json({ message: "Record not found" });
-    }
-    console.error("deleteEmailAccount error:", err.response?.data || err.message);
-    res.status(500).json({ message: "Error deleting record" });
-  }
-};
-
-// ====== BULK DELETE ======
-// ====== BULK DELETE ======
-exports.bulkDeleteEmailAccounts = async (req, res) => {
-  try {
-    const email = req.params.id;
-
-    if (!email.includes("@")) {
+    if (!email || !email.includes("@")) {
       return res.status(400).json({ message: "Please provide valid email" });
     }
-
-    // Import PostgreSQL pool
 
     const client = await pgPool.connect();
     
@@ -381,7 +355,7 @@ exports.bulkDeleteEmailAccounts = async (req, res) => {
       // Check if it's a 404 from OpenSearch
       if (error.response?.status === 404) {
         // Record was deleted from PostgreSQL but not found in OpenSearch
-        // You might want to commit the PostgreSQL deletion anyway
+        // Commit the PostgreSQL deletion anyway
         await client.query('COMMIT');
         return res.json({ 
           message: "Record deleted from PostgreSQL but not found in OpenSearch",
@@ -402,6 +376,131 @@ exports.bulkDeleteEmailAccounts = async (req, res) => {
     
     res.status(500).json({ 
       message: "Error deleting record",
+      error: err.message 
+    });
+  }
+};
+
+// ====== BULK DELETE ======
+// ====== BULK DELETE ======
+exports.bulkDeleteEmailAccounts = async (req, res) => {
+  try {
+    // Get emails from request body (accept both 'emails' or 'ids' field)
+    const emails = req.body.emails || req.body.ids;
+    
+    if (!emails || !Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({ message: "No emails provided" });
+    }
+
+    // Validate emails
+    const invalidEmails = emails.filter(e => !e || typeof e !== 'string' || !e.includes("@"));
+    if (invalidEmails.length > 0) {
+      return res.status(400).json({ 
+        message: "Invalid emails found", 
+        invalid: invalidEmails 
+      });
+    }
+
+    const client = await pgPool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Delete from PostgreSQL using IN clause
+      const placeholders = emails.map((_, i) => `$${i + 1}`).join(',');
+      const deletePgQuery = `
+        DELETE FROM email_accounts 
+        WHERE email IN (${placeholders})
+        RETURNING email, id
+      `;
+      
+      const pgResult = await client.query(deletePgQuery, emails);
+      const deletedFromPg = pgResult.rows.map(row => row.email);
+      
+      if (deletedFromPg.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ 
+          message: "No records found in database",
+          requested: emails.length,
+          found: 0
+        });
+      }
+      
+      // Delete from OpenSearch using bulk API
+      const bulkOperations = [];
+      deletedFromPg.forEach(email => {
+        bulkOperations.push({ 
+          delete: { 
+            _index: OPENSEARCH_INDEX, 
+            _id: encodeURIComponent(email) 
+          } 
+        });
+      });
+      
+      const bulkBody = bulkOperations.map(op => JSON.stringify(op)).join('\n') + '\n';
+      const bulkResponse = await axios.post(
+        `${OPENSEARCH_URL}/_bulk`,
+        bulkBody,
+        { 
+          auth: AUTH,
+          headers: { 'Content-Type': 'application/x-ndjson' }
+        }
+      );
+      
+      // Check OpenSearch deletion results
+      const osErrors = bulkResponse.data.items.filter(item => item.delete && item.delete.error);
+      const deletedFromOS = bulkResponse.data.items.filter(
+        item => item.delete && item.delete.result === 'deleted'
+      ).length;
+      
+      // If there are OpenSearch errors, decide whether to rollback
+      if (osErrors.length > 0) {
+        console.error("OpenSearch bulk delete errors:", osErrors);
+        // Option 1: Commit anyway (PostgreSQL deletions succeeded)
+        // Option 2: Rollback on critical errors
+        
+        // For now, we'll commit PostgreSQL deletions and report OS errors
+        // You can change this based on your requirements
+      }
+      
+      await client.query('COMMIT');
+      
+      // Find which emails weren't deleted from PostgreSQL
+      const notFoundEmails = emails.filter(email => !deletedFromPg.includes(email));
+      
+      res.json({ 
+        message: "Bulk delete completed",
+        stats: {
+          requested: emails.length,
+          deletedFromPostgres: deletedFromPg.length,
+          deletedFromOpenSearch: deletedFromOS,
+          notFoundInPostgres: notFoundEmails.length,
+          openSearchErrors: osErrors.length
+        },
+        details: {
+          deletedEmails: deletedFromPg,
+          notFoundEmails: notFoundEmails.length > 0 ? notFoundEmails : undefined,
+          openSearchErrorDetails: osErrors.length > 0 ? osErrors.map(e => e.delete.error) : undefined
+        }
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    
+  } catch (err) {
+    console.error("bulkDeleteEmailAccounts error:", err.response?.data || err.message);
+    
+    // Handle specific error cases
+    if (err.response?.status === 404) {
+      return res.status(404).json({ message: "Records not found in OpenSearch" });
+    }
+    
+    res.status(500).json({ 
+      message: "Error deleting records",
       error: err.message 
     });
   }
