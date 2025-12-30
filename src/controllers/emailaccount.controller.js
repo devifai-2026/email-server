@@ -836,3 +836,241 @@ exports.deleteDuplicateEmailAccounts = async (req, res) => {
     });
   }
 };
+
+
+// ====== DELETE ALL EMAIL ACCOUNTS ======
+exports.deleteAllEmailAccounts = async (req, res) => {
+  try {
+    // Get PostgreSQL pool
+    const pgPool = getPgPool();
+    const client = await pgPool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      console.log('Starting deletion of all email accounts...');
+      
+      // 1. First, retrieve all emails from PostgreSQL (for OpenSearch deletion)
+      const getAllEmailsQuery = `
+        SELECT email, created_at 
+        FROM email_accounts 
+        ORDER BY email
+      `;
+      
+      const pgResult = await client.query(getAllEmailsQuery);
+      const allEmails = pgResult.rows;
+      const totalRecords = allEmails.length;
+      
+      if (totalRecords === 0) {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.json({ 
+          message: "No email accounts found in database",
+          stats: {
+            totalRecords: 0,
+            deletedFromPostgres: 0,
+            deletedFromOpenSearch: 0
+          }
+        });
+      }
+      
+      console.log(`Found ${totalRecords} email accounts to delete`);
+      
+      // 2. Delete from PostgreSQL (all records)
+      const deleteAllPgQuery = `
+        DELETE FROM email_accounts 
+        RETURNING email, created_at
+      `;
+      
+      const pgDeleteResult = await client.query(deleteAllPgQuery);
+      const pgDeletedCount = pgDeleteResult.rowCount;
+      const deletedEmails = pgDeleteResult.rows.map(row => row.email);
+      
+      console.log(`Deleted ${pgDeletedCount} records from PostgreSQL`);
+      
+      // 3. Delete from OpenSearch using bulk API
+      let osDeletedCount = 0;
+      const failedDeletions = [];
+      
+      if (deletedEmails.length > 0) {
+        // Prepare bulk delete operations for OpenSearch
+        const bulkOperations = [];
+        
+        // Two approaches for OpenSearch deletion:
+        // 1. Try to delete by email (as ID)
+        // 2. If that fails, we'll delete using a delete_by_query
+        
+        deletedEmails.forEach(email => {
+          // Clean the email for OpenSearch ID
+          const emailId = email.toLowerCase().trim();
+          bulkOperations.push({ 
+            delete: { 
+              _index: OPENSEARCH_INDEX, 
+              _id: emailId
+            } 
+          });
+        });
+        
+        const bulkBody = bulkOperations.map(op => JSON.stringify(op)).join('\n') + '\n';
+        
+        try {
+          // First attempt: Bulk delete by ID
+          const bulkResponse = await axios.post(
+            `${OPENSEARCH_URL}/_bulk`,
+            bulkBody,
+            { 
+              auth: AUTH,
+              headers: { 
+                'Content-Type': 'application/x-ndjson',
+                'Content-Length': Buffer.byteLength(bulkBody)
+              },
+              timeout: 60000 // 60 second timeout for large operations
+            }
+          );
+          
+          // Count successful deletions from bulk response
+          const successfulDeletes = bulkResponse.data.items.filter(
+            item => item.delete && (item.delete.result === 'deleted' || item.delete.result === 'not_found')
+          );
+          
+          osDeletedCount = successfulDeletes.filter(
+            item => item.delete.result === 'deleted'
+          ).length;
+          
+          const notFoundInOS = successfulDeletes.filter(
+            item => item.delete.result === 'not_found'
+          ).length;
+          
+          // Log any errors
+          const errors = bulkResponse.data.items.filter(
+            item => item.delete && item.delete.error
+          );
+          
+          if (errors.length > 0) {
+            console.warn(`OpenSearch bulk delete had ${errors.length} errors`);
+            errors.forEach((errorItem, index) => {
+              const email = deletedEmails[index] || 'unknown';
+              failedDeletions.push({
+                email,
+                error: errorItem.delete.error.reason || 'Unknown error'
+              });
+            });
+          }
+          
+          console.log(`OpenSearch bulk delete: ${osDeletedCount} deleted, ${notFoundInOS} not found, ${errors.length} errors`);
+          
+          // If we have errors, try delete_by_query as fallback
+          if (errors.length > 0) {
+            console.log('Attempting delete_by_query as fallback for remaining records...');
+            
+            try {
+              const deleteByQueryBody = {
+                query: {
+                  match_all: {}
+                }
+              };
+              
+              const deleteByQueryResponse = await axios.post(
+                `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_delete_by_query?conflicts=proceed&refresh=true`,
+                deleteByQueryBody,
+                { 
+                  auth: AUTH,
+                  timeout: 60000
+                }
+              );
+              
+              const queryDeleted = deleteByQueryResponse.data.deleted || 0;
+              console.log(`delete_by_query deleted ${queryDeleted} additional records`);
+              
+              // Update count
+              osDeletedCount += queryDeleted;
+              
+            } catch (queryError) {
+              console.error('delete_by_query also failed:', queryError.message);
+              failedDeletions.push({
+                error: 'delete_by_query fallback failed',
+                details: queryError.message
+              });
+            }
+          }
+          
+        } catch (bulkError) {
+          console.error('OpenSearch bulk delete failed, trying delete_by_query...', bulkError.message);
+          
+          // Fallback: Use delete_by_query to delete all documents
+          try {
+            const deleteByQueryBody = {
+              query: {
+                match_all: {}
+              }
+            };
+            
+            const deleteByQueryResponse = await axios.post(
+              `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_delete_by_query?conflicts=proceed&refresh=true`,
+              deleteByQueryBody,
+              { 
+                auth: AUTH,
+                timeout: 60000
+              }
+            );
+            
+            osDeletedCount = deleteByQueryResponse.data.deleted || 0;
+            console.log(`delete_by_query deleted ${osDeletedCount} records from OpenSearch`);
+            
+          } catch (queryError) {
+            console.error('OpenSearch delete_by_query also failed:', queryError.message);
+            failedDeletions.push({
+              error: 'All OpenSearch deletion attempts failed',
+              details: queryError.message
+            });
+          }
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      // Prepare response
+      const response = {
+        message: "All email accounts deleted successfully",
+        stats: {
+          totalRecords: totalRecords,
+          deletedFromPostgres: pgDeletedCount,
+          deletedFromOpenSearch: osDeletedCount,
+          failedOperations: failedDeletions.length
+        },
+        timestamp: new Date().toISOString()
+      };
+      
+      // Add details if there were failures
+      if (failedDeletions.length > 0) {
+        response.details = {
+          note: "Some OpenSearch deletions may have failed, but all PostgreSQL records were deleted",
+          sampleErrors: failedDeletions.slice(0, 5), // Limit output
+          totalFailures: failedDeletions.length
+        };
+      }
+      
+      res.json(response);
+      
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error("deleteAllEmailAccounts transaction error:", err.message);
+      throw err;
+    } finally {
+      client.release();
+    }
+    
+  } catch (err) {
+    console.error("deleteAllEmailAccounts error:", {
+      message: err.message,
+      response: err.response?.data,
+      stack: err.stack
+    });
+    
+    res.status(500).json({ 
+      message: "Error deleting all email accounts",
+      error: err.message,
+      details: err.response?.data || undefined
+    });
+  }
+};
