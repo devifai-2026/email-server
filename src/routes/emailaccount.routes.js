@@ -23,6 +23,6 @@ router.put("/:id", protect, adminOnly, updateEmailAccount);
 router.delete("/:id", protect, adminOnly, deleteEmailAccount);
 router.post("/bulk-delete", protect, adminOnly, bulkDeleteEmailAccounts);
 router.post("/prevent-duplicate", deleteDuplicateEmailAccounts);
-router.delete("/delete-all", deleteAllEmailAccounts);
+router.post("/delete-all", deleteAllEmailAccounts);
 
 module.exports = router;
