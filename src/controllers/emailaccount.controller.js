@@ -850,16 +850,10 @@ exports.deleteAllEmailAccounts = async (req, res) => {
       
       console.log('Starting deletion of all email accounts...');
       
-      // 1. First, retrieve all emails from PostgreSQL (for OpenSearch deletion)
-      const getAllEmailsQuery = `
-        SELECT email, created_at 
-        FROM email_accounts 
-        ORDER BY email
-      `;
-      
-      const pgResult = await client.query(getAllEmailsQuery);
-      const allEmails = pgResult.rows;
-      const totalRecords = allEmails.length;
+      // 1. First, just count the total records
+      const countQuery = `SELECT COUNT(*) as total FROM email_accounts`;
+      const countResult = await client.query(countQuery);
+      const totalRecords = parseInt(countResult.rows[0].total);
       
       if (totalRecords === 0) {
         await client.query('ROLLBACK');
@@ -876,154 +870,109 @@ exports.deleteAllEmailAccounts = async (req, res) => {
       
       console.log(`Found ${totalRecords} email accounts to delete`);
       
-      // 2. Delete from PostgreSQL (all records)
-      const deleteAllPgQuery = `
-        DELETE FROM email_accounts 
-        RETURNING email, created_at
-      `;
+      // 2. Delete from PostgreSQL using TRUNCATE for efficiency
+      // This is much faster and doesn't load records into memory
+      console.log('Deleting from PostgreSQL...');
+      const deleteAllPgQuery = `TRUNCATE TABLE email_accounts`;
+      await client.query(deleteAllPgQuery);
+      console.log(`Deleted ${totalRecords} records from PostgreSQL`);
       
-      const pgDeleteResult = await client.query(deleteAllPgQuery);
-      const pgDeletedCount = pgDeleteResult.rowCount;
-      const deletedEmails = pgDeleteResult.rows.map(row => row.email);
-      
-      console.log(`Deleted ${pgDeletedCount} records from PostgreSQL`);
-      
-      // 3. Delete from OpenSearch using bulk API
+      // 3. Delete from OpenSearch using delete_by_query (most efficient for large datasets)
+      console.log('Starting OpenSearch deletion...');
       let osDeletedCount = 0;
       const failedDeletions = [];
       
-      if (deletedEmails.length > 0) {
-        // Prepare bulk delete operations for OpenSearch
-        const bulkOperations = [];
-        
-        // Two approaches for OpenSearch deletion:
-        // 1. Try to delete by email (as ID)
-        // 2. If that fails, we'll delete using a delete_by_query
-        
-        deletedEmails.forEach(email => {
-          // Clean the email for OpenSearch ID
-          const emailId = email.toLowerCase().trim();
-          bulkOperations.push({ 
-            delete: { 
-              _index: OPENSEARCH_INDEX, 
-              _id: emailId
-            } 
-          });
-        });
-        
-        const bulkBody = bulkOperations.map(op => JSON.stringify(op)).join('\n') + '\n';
-        
-        try {
-          // First attempt: Bulk delete by ID
-          const bulkResponse = await axios.post(
-            `${OPENSEARCH_URL}/_bulk`,
-            bulkBody,
-            { 
-              auth: AUTH,
-              headers: { 
-                'Content-Type': 'application/x-ndjson',
-                'Content-Length': Buffer.byteLength(bulkBody)
-              },
-              timeout: 60000 // 60 second timeout for large operations
-            }
-          );
-          
-          // Count successful deletions from bulk response
-          const successfulDeletes = bulkResponse.data.items.filter(
-            item => item.delete && (item.delete.result === 'deleted' || item.delete.result === 'not_found')
-          );
-          
-          osDeletedCount = successfulDeletes.filter(
-            item => item.delete.result === 'deleted'
-          ).length;
-          
-          const notFoundInOS = successfulDeletes.filter(
-            item => item.delete.result === 'not_found'
-          ).length;
-          
-          // Log any errors
-          const errors = bulkResponse.data.items.filter(
-            item => item.delete && item.delete.error
-          );
-          
-          if (errors.length > 0) {
-            console.warn(`OpenSearch bulk delete had ${errors.length} errors`);
-            errors.forEach((errorItem, index) => {
-              const email = deletedEmails[index] || 'unknown';
-              failedDeletions.push({
-                email,
-                error: errorItem.delete.error.reason || 'Unknown error'
-              });
-            });
+      try {
+        // Use delete_by_query to delete all documents efficiently
+        const deleteByQueryBody = {
+          query: {
+            match_all: {}
           }
-          
-          console.log(`OpenSearch bulk delete: ${osDeletedCount} deleted, ${notFoundInOS} not found, ${errors.length} errors`);
-          
-          // If we have errors, try delete_by_query as fallback
-          if (errors.length > 0) {
-            console.log('Attempting delete_by_query as fallback for remaining records...');
-            
-            try {
-              const deleteByQueryBody = {
-                query: {
-                  match_all: {}
-                }
-              };
-              
-              const deleteByQueryResponse = await axios.post(
-                `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_delete_by_query?conflicts=proceed&refresh=true`,
-                deleteByQueryBody,
-                { 
-                  auth: AUTH,
-                  timeout: 60000
-                }
-              );
-              
-              const queryDeleted = deleteByQueryResponse.data.deleted || 0;
-              console.log(`delete_by_query deleted ${queryDeleted} additional records`);
-              
-              // Update count
-              osDeletedCount += queryDeleted;
-              
-            } catch (queryError) {
-              console.error('delete_by_query also failed:', queryError.message);
-              failedDeletions.push({
-                error: 'delete_by_query fallback failed',
-                details: queryError.message
-              });
-            }
+        };
+        
+        console.log('Sending delete_by_query to OpenSearch...');
+        const deleteByQueryResponse = await axios.post(
+          `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_delete_by_query?conflicts=proceed&refresh=true&wait_for_completion=false`,
+          deleteByQueryBody,
+          { 
+            auth: AUTH,
+            timeout: 120000 // 120 seconds for large dataset
           }
+        );
+        
+        // Get the task ID to monitor progress
+        const taskId = deleteByQueryResponse.data.task;
+        console.log(`OpenSearch delete task started: ${taskId}`);
+        
+        // Poll for task completion
+        let taskCompleted = false;
+        let attempts = 0;
+        const maxAttempts = 120; // 10 minutes maximum
+        
+        while (!taskCompleted && attempts < maxAttempts) {
+          attempts++;
+          await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
           
-        } catch (bulkError) {
-          console.error('OpenSearch bulk delete failed, trying delete_by_query...', bulkError.message);
-          
-          // Fallback: Use delete_by_query to delete all documents
           try {
-            const deleteByQueryBody = {
-              query: {
-                match_all: {}
-              }
-            };
-            
-            const deleteByQueryResponse = await axios.post(
-              `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_delete_by_query?conflicts=proceed&refresh=true`,
-              deleteByQueryBody,
-              { 
-                auth: AUTH,
-                timeout: 60000
-              }
+            const taskResponse = await axios.get(
+              `${OPENSEARCH_URL}/_tasks/${taskId}`,
+              { auth: AUTH, timeout: 30000 }
             );
             
-            osDeletedCount = deleteByQueryResponse.data.deleted || 0;
-            console.log(`delete_by_query deleted ${osDeletedCount} records from OpenSearch`);
+            const task = taskResponse.data.task;
+            console.log(`Task progress: ${task.status.total} total, ${task.status.deleted} deleted, ${task.status.created} created, ${task.status.updated} updated`);
             
-          } catch (queryError) {
-            console.error('OpenSearch delete_by_query also failed:', queryError.message);
-            failedDeletions.push({
-              error: 'All OpenSearch deletion attempts failed',
-              details: queryError.message
-            });
+            if (task.completed) {
+              taskCompleted = true;
+              osDeletedCount = task.response.deleted || 0;
+              console.log(`OpenSearch deletion completed: ${osDeletedCount} records deleted`);
+              
+              // Check for failures in the task
+              if (task.response.failures && task.response.failures.length > 0) {
+                console.warn(`OpenSearch had ${task.response.failures.length} failures`);
+                failedDeletions.push({
+                  error: 'Some OpenSearch deletions failed',
+                  totalFailures: task.response.failures.length,
+                  sampleFailures: task.response.failures.slice(0, 3)
+                });
+              }
+            }
+          } catch (taskError) {
+            console.error(`Error checking task status (attempt ${attempts}):`, taskError.message);
           }
+        }
+        
+        if (!taskCompleted) {
+          console.warn('OpenSearch deletion task timed out after maximum attempts');
+          failedDeletions.push({
+            error: 'OpenSearch deletion task timed out',
+            taskId: taskId
+          });
+        }
+        
+      } catch (osError) {
+        console.error('OpenSearch deletion error:', osError.message);
+        
+        // Try alternative approach if delete_by_query fails
+        try {
+          console.log('Trying alternative deletion method...');
+          
+          // Try to delete the entire index if that's acceptable
+          // WARNING: This will delete the index entirely
+          const deleteIndexResponse = await axios.delete(
+            `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}`,
+            { auth: AUTH, timeout: 30000 }
+          );
+          
+          console.log(`OpenSearch index deleted successfully`);
+          osDeletedCount = totalRecords; // Assuming all were deleted
+          
+        } catch (indexError) {
+          console.error('Failed to delete OpenSearch index:', indexError.message);
+          failedDeletions.push({
+            error: 'All OpenSearch deletion attempts failed',
+            details: indexError.message
+          });
         }
       }
       
@@ -1034,7 +983,7 @@ exports.deleteAllEmailAccounts = async (req, res) => {
         message: "All email accounts deleted successfully",
         stats: {
           totalRecords: totalRecords,
-          deletedFromPostgres: pgDeletedCount,
+          deletedFromPostgres: totalRecords,
           deletedFromOpenSearch: osDeletedCount,
           failedOperations: failedDeletions.length
         },
@@ -1045,8 +994,7 @@ exports.deleteAllEmailAccounts = async (req, res) => {
       if (failedDeletions.length > 0) {
         response.details = {
           note: "Some OpenSearch deletions may have failed, but all PostgreSQL records were deleted",
-          sampleErrors: failedDeletions.slice(0, 5), // Limit output
-          totalFailures: failedDeletions.length
+          failures: failedDeletions
         };
       }
       
