@@ -227,7 +227,7 @@ exports.signin = async (req, res) => {
     }
 
     // Generate new token
-    const userData = await User.findById(user._id);
+    const userData = await User.findById(user._id).lean(); // Use .lean() to get plain JavaScript object
 
     if (!userData.isActive) {
       return res
@@ -238,6 +238,7 @@ exports.signin = async (req, res) => {
     // Check subscription status for regular users
     let isSubscriptionExpired = false;
     let subscriptionStatus = "active";
+    let currentSubscription = null;
     
     if (userData.role === roles.USER && userData.subscription && userData.subscription.length > 0) {
       // Get the most recent subscription
@@ -245,7 +246,7 @@ exports.signin = async (req, res) => {
         (a, b) => new Date(b.subscribedAt) - new Date(a.subscribedAt)
       );
       
-      const currentSubscription = sortedSubscriptions[0];
+      currentSubscription = sortedSubscriptions[0];
       const today = new Date();
       const expiresAt = new Date(currentSubscription.expiresAt);
       
@@ -253,10 +254,13 @@ exports.signin = async (req, res) => {
         isSubscriptionExpired = true;
         subscriptionStatus = "expired";
       }
+      
+      // Add isActive flag to current subscription
+      currentSubscription.isActive = expiresAt >= today;
     }
 
     if (userData.role === roles.ADMIN) {
-      const bulkUpload = await BulkUpload.findOne({ status: "processing" });
+      const bulkUpload = await BulkUpload.findOne({ status: "processing" }).lean();
       userData.uploadData = bulkUpload;
     }
     
@@ -273,27 +277,13 @@ exports.signin = async (req, res) => {
       role: user.role,
     };
 
-    // Convert userData to plain object for response
-    const userResponse = userData.toObject ? userData.toObject() : userData;
-    
     // Add subscription status to the response
-    userResponse.subscriptionStatus = subscriptionStatus;
-    userResponse.isSubscriptionExpired = isSubscriptionExpired;
-    
-    // Add a helper field to easily check in frontend
-    if (userData.subscription && userData.subscription.length > 0) {
-      const sortedSubscriptions = [...userData.subscription].sort(
-        (a, b) => new Date(b.subscribedAt) - new Date(a.subscribedAt)
-      );
-      const currentSubscription = sortedSubscriptions[0];
-      const today = new Date();
-      const expiresAt = new Date(currentSubscription.expiresAt);
-      
-      userResponse.currentSubscription = {
-        ...currentSubscription,
-        isActive: expiresAt >= today
-      };
-    }
+    const userResponse = {
+      ...userData,
+      subscriptionStatus,
+      isSubscriptionExpired,
+      currentSubscription
+    };
 
     res.json({
       message: "Signed in successfully",
