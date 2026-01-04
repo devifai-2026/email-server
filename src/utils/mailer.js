@@ -225,9 +225,6 @@ exports.sendSubscriptionSuccessEmail = async (
                  width="180"
                  height="auto">
             <div style="margin-top: 8px;">
-              <h1 style="margin: 0; color: #2563eb; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">
-                Reach Finder
-              </h1>
             </div>
           </div>
         </div>
