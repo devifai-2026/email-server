@@ -219,47 +219,46 @@ if (email) {
 
   values.forEach((emailValue) => {
     if (emailValue.includes("@")) {
+      // This is an email search - search in email field
       if (emailValue.startsWith("@")) {
-        // Search for all emails from this domain (e.g., @gmail.com)
         const domain = emailValue.substring(1);
         should.push(
           { wildcard: { email: `*@${domain}` } },
           { wildcard: { email: `*@*.${domain}` } }
         );
       } else if (emailValue.includes(".")) {
-        // Complete email address - do exact match
         filter.push({ term: { email: emailValue } });
       } else {
-        // Partial email with @ but incomplete (e.g., john@)
         should.push(
           { wildcard: { email: `*${emailValue}*` } },
           { match_phrase_prefix: { email: emailValue } }
         );
       }
     } else {
-      // No @ symbol - could be username, partial email, or domain
-      
-      // Check if it looks like a domain (contains dot and valid domain characters)
+      // Check if it looks like a domain (for website search)
       const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
       
       if (emailValue.includes('.') && domainRegex.test(emailValue)) {
-        // It looks like a domain - search for emails ending with this domain
+        // It looks like a domain - search in website field
+        const normalizedDomain = normalizeWebsite(emailValue);
+        
+        // Search in website and website_normalized fields
         should.push(
-          { wildcard: { email: `*@${emailValue}` } },
-          { wildcard: { email: `*@*.${emailValue}` } }
+          { term: { website_normalized: normalizedDomain } },
+          { term: { website: normalizedDomain } },
+          { term: { website: `www.${normalizedDomain}` } }
         );
         
-        // Also search for subdomains
-        const parts = emailValue.split('.');
-        if (parts.length > 2) {
-          // For domains like sub.domain.com, also search for *.domain.com
-          const rootDomain = parts.slice(-2).join('.');
+        // Also handle subdomains
+        if (emailValue.startsWith('www.')) {
+          const withoutWWW = emailValue.replace(/^www\./, '');
           should.push(
-            { wildcard: { email: `*@*.${rootDomain}` } }
+            { term: { website: withoutWWW } },
+            { term: { website_normalized: withoutWWW } }
           );
         }
       } else {
-        // Probably a username or partial email - search anywhere in email
+        // Probably a username or partial email - search in email field
         should.push(
           { wildcard: { email: `*${emailValue}*` } },
           { match_phrase_prefix: { email: emailValue } }
@@ -268,7 +267,7 @@ if (email) {
     }
   });
 
-  console.log(`Email search for: "${email}" - parsed as:`, values);
+  console.log(`Search for: "${email}" - parsed as:`, values);
 }
 
     /* ---------- WEBSITE FILTER ---------- */
