@@ -162,18 +162,33 @@ exports.getMaskedAccounts = async (req, res) => {
     const MAX_LIMIT = Math.min(parseInt(limit), 100);
     const from = (parseInt(page) - 1) * MAX_LIMIT;
 
+    // Check if the input contains "@" (full email) or is just a domain
+    let query;
+    if (email.includes("@")) {
+      // Search for exact email match
+      query = {
+        term: {
+          email: email
+        }
+      };
+    } else {
+      // Search for domain (emails ending with @domain.com)
+      query = {
+        wildcard: {
+          email: {
+            value: `*@${email}`
+          }
+        }
+      };
+    }
+
     const body = {
       size: MAX_LIMIT,
       from: from,
       sort: [
         { created_at: "desc" }
       ],
-      query: {
-        // Using match_phrase for exact domain matching
-        match_phrase: {
-          email: email
-        }
-      }
+      query: query
     };
 
     const { data } = await axios.post(
