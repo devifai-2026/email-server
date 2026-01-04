@@ -118,7 +118,7 @@ exports.getEmailAccounts = async (req, res) => {
       console.log({ decoded });
 
       // Fetch user from database using the decoded token data
-      user = await User.findById(decoded.userId).lean();
+      user = await User.findById(decoded.id).lean();
 
       if (!user) {
         return res.status(401).json({
