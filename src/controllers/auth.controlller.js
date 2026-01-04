@@ -235,10 +235,31 @@ exports.signin = async (req, res) => {
         .json({ message: "Account is deactivated. Please contact support." });
     }
 
+    // Check subscription status for regular users
+    let isSubscriptionExpired = false;
+    let subscriptionStatus = "active";
+    
+    if (userData.role === roles.USER && userData.subscription && userData.subscription.length > 0) {
+      // Get the most recent subscription
+      const sortedSubscriptions = [...userData.subscription].sort(
+        (a, b) => new Date(b.subscribedAt) - new Date(a.subscribedAt)
+      );
+      
+      const currentSubscription = sortedSubscriptions[0];
+      const today = new Date();
+      const expiresAt = new Date(currentSubscription.expiresAt);
+      
+      if (expiresAt < today) {
+        isSubscriptionExpired = true;
+        subscriptionStatus = "expired";
+      }
+    }
+
     if (userData.role === roles.ADMIN) {
       const bulkUpload = await BulkUpload.findOne({ status: "processing" });
       userData.uploadData = bulkUpload;
     }
+    
     const token = generateToken({ id: user._id, role: user.role });
 
     // Save token to DB (optional, if you want to track sessions)
@@ -252,10 +273,32 @@ exports.signin = async (req, res) => {
       role: user.role,
     };
 
+    // Convert userData to plain object for response
+    const userResponse = userData.toObject ? userData.toObject() : userData;
+    
+    // Add subscription status to the response
+    userResponse.subscriptionStatus = subscriptionStatus;
+    userResponse.isSubscriptionExpired = isSubscriptionExpired;
+    
+    // Add a helper field to easily check in frontend
+    if (userData.subscription && userData.subscription.length > 0) {
+      const sortedSubscriptions = [...userData.subscription].sort(
+        (a, b) => new Date(b.subscribedAt) - new Date(a.subscribedAt)
+      );
+      const currentSubscription = sortedSubscriptions[0];
+      const today = new Date();
+      const expiresAt = new Date(currentSubscription.expiresAt);
+      
+      userResponse.currentSubscription = {
+        ...currentSubscription,
+        isActive: expiresAt >= today
+      };
+    }
+
     res.json({
       message: "Signed in successfully",
       token,
-      user: userData,
+      user: userResponse,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
