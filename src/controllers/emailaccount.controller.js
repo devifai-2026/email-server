@@ -155,9 +155,9 @@ exports.getEmailAccounts = async (req, res) => {
 // ====== GET MASKED EMAILS ======
 exports.getMaskedAccounts = async (req, res) => {
   try {
-    const { companyname, limit = 25, page = 1 } = req.query;
+    const { email, limit = 25, page = 1 } = req.query;
 
-    if (!companyname) return res.status(400).json({ message: "companyname filter is required" });
+    if (!email) return res.status(400).json({ message: "email filter is required" });
 
     const MAX_LIMIT = Math.min(parseInt(limit), 100);
     const from = (parseInt(page) - 1) * MAX_LIMIT;
@@ -169,8 +169,9 @@ exports.getMaskedAccounts = async (req, res) => {
         { created_at: "desc" }
       ],
       query: {
-        match: {
-          companyname: companyname
+        // Using match_phrase for exact domain matching
+        match_phrase: {
+          email: email
         }
       }
     };
@@ -187,7 +188,11 @@ exports.getMaskedAccounts = async (req, res) => {
     // Apply masking logic
     const rows = hits.map(h => h._source);
     const normalEmails = rows.slice(0, 10);
-    const maskedEmails = rows.slice(10).map(r => ({ ...r, email: maskEmail(r.email), masked: true }));
+    const maskedEmails = rows.slice(10).map(r => ({ 
+      ...r, 
+      email: maskEmail(r.email), 
+      masked: true 
+    }));
 
     res.json({
       data: [...normalEmails, ...maskedEmails],
