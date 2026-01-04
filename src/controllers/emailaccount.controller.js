@@ -28,6 +28,73 @@ const pageCursorMap = new Map();
 // ====== GET EMAIL ACCOUNTS WITH FILTERS, PAGINATION ======
 exports.getEmailAccounts = async (req, res) => {
   try {
+    // Extract token from request (assuming it's in Authorization header)
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: "Authentication token required"
+      });
+    }
+
+    // Verify token and get user information
+    let user;
+    try {
+      // Assuming you have a function to verify JWT tokens
+      // This depends on your authentication setup
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      // Fetch user from database using the decoded token data
+      user = await User.findById(decoded.userId).lean();
+      
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          error: "User not found"
+        });
+      }
+    } catch (tokenError) {
+      console.error("Token verification error:", tokenError);
+      return res.status(401).json({
+        success: false,
+        error: "Invalid or expired token"
+      });
+    }
+
+    // Check if user role is 'user' and subscription is expired
+    if (user.role === 'user') {
+      // Find the current or most recent subscription
+      let currentSubscription;
+      
+      if (user.subscription && user.subscription.length > 0) {
+        // Sort subscriptions by date to get the most recent one
+        const sortedSubscriptions = user.subscription.sort(
+          (a, b) => new Date(b.subscribedAt) - new Date(a.subscribedAt)
+        );
+        
+        currentSubscription = sortedSubscriptions[0];
+        
+        // Check if subscription is expired
+        const today = new Date();
+        const expiresAt = new Date(currentSubscription.expiresAt);
+        
+        if (expiresAt < today) {
+          return res.status(403).json({
+            success: false,
+            error: "Your subscription has expired. Please renew to continue using the service."
+          });
+        }
+      } else {
+        // No subscription found
+        return res.status(403).json({
+          success: false,
+          error: "No active subscription found. Please subscribe to use this service."
+        });
+      }
+    }
+
+    // If user passes validation, proceed with the original query logic
     const {
       email,
       companyname,
@@ -36,21 +103,19 @@ exports.getEmailAccounts = async (req, res) => {
       website,
       limit = 100,
       search_after = null,
-      // Support both parameter naming conventions
       sort_field = "email",
       sort_order = "asc",
-      sort = null,  // Old style: sort=name
-      order = "asc" // Old style: order=asc
+      sort = null,
+      order = "asc"
     } = req.query;
 
     // Determine which sorting parameters to use
-    const sortField = sort_field || sort || "email"; // Priority: sort_field > sort > default "email"
-    const sortDirection = sort_order || order || "asc"; // Priority: sort_order > order > default "asc"
+    const sortField = sort_field || sort || "email";
+    const sortDirection = sort_order || order || "asc";
 
     const size = Math.min(parseInt(limit) || 100, 500);
 
     /* ---------- SORT CONFIG ---------- */
-    // Always sort by a unique field last for consistent pagination
     const sortConfig = [
       { [sortField]: { "order": sortDirection, "missing": "_last" } },
       { "_id": "asc" }
@@ -73,44 +138,33 @@ exports.getEmailAccounts = async (req, res) => {
         .replace(/^www\./, '');
     };
 
-    /* ---------- EMAIL FILTER - IMPROVED LOGIC ---------- */
+    /* ---------- EMAIL FILTER ---------- */
     if (email) {
       const values = email.split(",").map(v => v.trim().toLowerCase());
       
       values.forEach(emailValue => {
-        // If it contains @, check if it's a complete email or just domain
         if (emailValue.includes('@')) {
-          // If it's just @domain.com (searching for all emails from domain)
           if (emailValue.startsWith('@')) {
-            const domain = emailValue.substring(1); // Remove @
+            const domain = emailValue.substring(1);
             should.push(
               { wildcard: { email: `*@${domain}` } },
               { wildcard: { email: `*@*.${domain}` } }
             );
-          } 
-          // If it's a complete email address, do exact match
-          else if (emailValue.includes('.')) {
+          } else if (emailValue.includes('.')) {
             filter.push({ term: { email: emailValue } });
-          }
-          // Handle partial email with @
-          else {
+          } else {
             should.push(
               { wildcard: { email: `*${emailValue}*` } },
               { match_phrase_prefix: { email: emailValue } }
             );
           }
-        } 
-        // If no @ symbol, could be username or domain
-        else {
-          // Check if it looks like a domain (contains . and no special characters)
+        } else {
           if (emailValue.includes('.') && /^[a-zA-Z0-9.-]+$/.test(emailValue)) {
-            // Search for emails ending with this domain
             should.push(
               { wildcard: { email: `*@${emailValue}` } },
               { wildcard: { email: `*@*.${emailValue}` } }
             );
           } else {
-            // Probably a username or partial email - search anywhere in email
             should.push(
               { wildcard: { email: `*${emailValue}*` } },
               { match_phrase_prefix: { email: emailValue } }
@@ -122,7 +176,7 @@ exports.getEmailAccounts = async (req, res) => {
       console.log(`Email search for: "${email}" - parsed as:`, values);
     }
 
-    /* ---------- WEBSITE FILTER - HANDLE WWW. PREFIX ---------- */
+    /* ---------- WEBSITE FILTER ---------- */
     if (website) {
       const domains = website.split(",").map(v => normalizeWebsite(v));
       
@@ -131,14 +185,10 @@ exports.getEmailAccounts = async (req, res) => {
       const domainConditions = [];
       
       domains.forEach(domain => {
-        // Match exact domain (without www.)
         domainConditions.push({ term: { website_normalized: domain } });
-        
-        // Also match if stored with www. prefix
         domainConditions.push({ term: { website: domain } });
         domainConditions.push({ term: { website: `www.${domain}` } });
         
-        // Match if stored without www. but we're searching with it
         if (domain.startsWith('www.')) {
           const withoutWWW = domain.replace(/^www\./, '');
           domainConditions.push({ term: { website: withoutWWW } });
@@ -149,7 +199,7 @@ exports.getEmailAccounts = async (req, res) => {
       should.push(...domainConditions);
     }
 
-    /* ---------- COMPANY NAME - CASE INSENSITIVE EXACT MATCH ---------- */
+    /* ---------- COMPANY NAME ---------- */
     if (companyname) {
       const companyNames = companyname.split(",").map(v => v.trim().toLowerCase());
       
@@ -160,7 +210,7 @@ exports.getEmailAccounts = async (req, res) => {
       }
     }
 
-    /* ---------- NAME - PARTIAL MATCH ---------- */
+    /* ---------- NAME ---------- */
     if (name) {
       const names = name.split(",").map(v => v.trim());
       
@@ -172,7 +222,7 @@ exports.getEmailAccounts = async (req, res) => {
       });
     }
 
-    /* ---------- ROLE - CASE INSENSITIVE EXACT MATCH ---------- */
+    /* ---------- ROLE ---------- */
     if (role) {
       const roles = role.split(",").map(v => v.trim().toLowerCase());
       
@@ -245,7 +295,13 @@ exports.getEmailAccounts = async (req, res) => {
       limit: size,
       next_search_after,
       data,
-      has_more: next_search_after !== null
+      has_more: next_search_after !== null,
+      user: {
+        email: user.email,
+        fullname: user.fullname,
+        role: user.role,
+        subscription: user.role === 'user' ? user.subscription[user.subscription.length - 1] : null
+      }
     });
 
   } catch (err) {
