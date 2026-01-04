@@ -1,5 +1,7 @@
 // controllers/emailAccount.controller.js
 const axios = require("axios");
+const jwt = require('jsonwebtoken');
+const User = require('./../models/user.model'); // Adjust the path to your User model
 // In your controller file
 const { getPgPool } = require('../config/db'); // Adjust path as needed
 
@@ -15,6 +17,74 @@ const AUTH = {
 const INDEX = "email_accounts"; // ✅ ADD THIS LINE
 
 const pageCursorMap = new Map();
+
+
+// Add these middleware functions if you don't already have them
+
+// Middleware to verify token (optional - can be used as middleware)
+const verifyToken = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: "Authentication token required"
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.userId).lean();
+    
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: "User not found"
+      });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    console.error("Token verification error:", error);
+    return res.status(401).json({
+      success: false,
+      error: "Invalid or expired token"
+    });
+  }
+};
+
+// Middleware to check subscription (for users only)
+const checkSubscription = (req, res, next) => {
+  const user = req.user;
+  
+  if (user.role === 'user') {
+    if (user.subscription && user.subscription.length > 0) {
+      const sortedSubscriptions = user.subscription.sort(
+        (a, b) => new Date(b.subscribedAt) - new Date(a.subscribedAt)
+      );
+      
+      const currentSubscription = sortedSubscriptions[0];
+      const today = new Date();
+      const expiresAt = new Date(currentSubscription.expiresAt);
+      
+      if (expiresAt < today) {
+        return res.status(403).json({
+          success: false,
+          error: "Your subscription has expired. Please renew to continue using the service."
+        });
+      }
+    } else {
+      return res.status(403).json({
+        success: false,
+        error: "No active subscription found. Please subscribe to use this service."
+      });
+    }
+  }
+  
+  next();
+};
+
 
 // Helper: mask email
 // const maskEmail = (email) => {
