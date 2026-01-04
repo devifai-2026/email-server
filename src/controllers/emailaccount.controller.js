@@ -162,40 +162,56 @@ exports.getMaskedAccounts = async (req, res) => {
     const MAX_LIMIT = Math.min(parseInt(limit), 100);
     const from = (parseInt(page) - 1) * MAX_LIMIT;
 
-    // Check if the input contains "@" (full email) or is just a domain
-    let query;
+    // Log the incoming query for debugging
+    console.log("Searching for:", email);
+
+    let body;
+    
+    // Check if it's a full email or just a domain
     if (email.includes("@")) {
-      // Search for exact email match
-      query = {
-        term: {
-          email: email
+      // Full email - use match query
+      body = {
+        size: MAX_LIMIT,
+        from: from,
+        sort: [{ created_at: "desc" }],
+        query: {
+          match: {
+            email: email
+          }
         }
       };
     } else {
-      // Search for domain (emails ending with @domain.com)
-      query = {
-        wildcard: {
-          email: {
-            value: `*@${email}`
+      // Domain only - use regexp query for better performance than wildcard
+      body = {
+        size: MAX_LIMIT,
+        from: from,
+        sort: [{ created_at: "desc" }],
+        query: {
+          regexp: {
+            email: {
+              value: `.*@${email}.*`,
+              flags: "ALL",
+              case_insensitive: true
+            }
           }
         }
       };
     }
 
-    const body = {
-      size: MAX_LIMIT,
-      from: from,
-      sort: [
-        { created_at: "desc" }
-      ],
-      query: query
-    };
+    console.log("OpenSearch query body:", JSON.stringify(body, null, 2));
 
     const { data } = await axios.post(
       `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
       body,
-      { auth: AUTH }
+      { 
+        auth: AUTH,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      }
     );
+
+    console.log(`Found ${data.hits.hits.length} results`);
 
     const hits = data.hits.hits;
     const totalCount = data.hits.total?.value || 0;
@@ -221,7 +237,11 @@ exports.getMaskedAccounts = async (req, res) => {
     });
   } catch (err) {
     console.error("getMaskedAccounts error:", err.response?.data || err.message);
-    res.status(500).json({ message: "Error fetching masked accounts" });
+    console.error("Full error:", JSON.stringify(err.response?.data || err, null, 2));
+    res.status(500).json({ 
+      message: "Error fetching masked accounts",
+      error: err.response?.data || err.message 
+    });
   }
 };
 
