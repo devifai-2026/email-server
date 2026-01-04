@@ -17,13 +17,13 @@ const INDEX = "email_accounts"; // ✅ ADD THIS LINE
 const pageCursorMap = new Map();
 
 // Helper: mask email
-const maskEmail = (email) => {
-  if (!email || typeof email !== "string") return email;
-  const [user, domain] = email.split("@");
-  if (!user || !domain) return email;
-  const visible = user.slice(0, 3);
-  return `${visible}${"*".repeat(Math.max(3, user.length - 3))}@${domain}`;
-};
+// const maskEmail = (email) => {
+//   if (!email || typeof email !== "string") return email;
+//   const [user, domain] = email.split("@");
+//   if (!user || !domain) return email;
+//   const visible = user.slice(0, 3);
+//   return `${visible}${"*".repeat(Math.max(3, user.length - 3))}@${domain}`;
+// };
 
 // ====== GET EMAIL ACCOUNTS WITH FILTERS, PAGINATION ======
 exports.getEmailAccounts = async (req, res) => {
