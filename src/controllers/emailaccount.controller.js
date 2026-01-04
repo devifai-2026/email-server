@@ -67,17 +67,51 @@ exports.getEmailAccounts = async (req, res) => {
         .replace(/^www\./, '');          // Remove www. again in case it was after protocol
     };
 
-    /* ---------- EMAIL FILTER - EXACT MATCH ---------- */
+    /* ---------- EMAIL FILTER - IMPROVED LOGIC ---------- */
     if (email) {
-      const values = email.split(",").map(v => 
-        v.trim().toLowerCase()
-      );
+      const values = email.split(",").map(v => v.trim().toLowerCase());
       
-      if (values.length === 1) {
-        filter.push({ term: { email: values[0] } });
-      } else {
-        filter.push({ terms: { email: values } });
-      }
+      values.forEach(emailValue => {
+        // Check if it's a full email address (contains @)
+        if (emailValue.includes('@')) {
+          // If it's a complete email with @domain.com, do exact match
+          if (emailValue.match(/@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
+            filter.push({ term: { email: emailValue } });
+          } 
+          // If it's just @domain.com (searching for all emails from domain)
+          else if (emailValue.startsWith('@')) {
+            const domain = emailValue.substring(1); // Remove @
+            should.push(
+              { wildcard: { email: `*@${domain}` } },
+              { wildcard: { email: `*@*.${domain}` } }
+            );
+          }
+          // Handle partial email searches
+          else {
+            should.push(
+              { wildcard: { email: `*${emailValue}*` } },
+              { match_phrase_prefix: { email: emailValue } }
+            );
+          }
+        } 
+        // If no @ symbol, could be username or domain
+        else {
+          // Check if it looks like a domain (contains .)
+          if (emailValue.includes('.')) {
+            // Search for emails ending with this domain
+            should.push(
+              { wildcard: { email: `*@${emailValue}` } },
+              { wildcard: { email: `*@*.${emailValue}` } }
+            );
+          } else {
+            // Probably a username - search anywhere in email
+            should.push(
+              { wildcard: { email: `*${emailValue}*` } },
+              { match_phrase_prefix: { email: emailValue } }
+            );
+          }
+        }
+      });
     }
 
     /* ---------- WEBSITE FILTER - HANDLE WWW. PREFIX ---------- */
@@ -164,9 +198,11 @@ exports.getEmailAccounts = async (req, res) => {
     });
 
     /* ---------- QUERY BUILD ---------- */
+    // For email search, we want to use should (OR logic) to match different patterns
+    // For other filters, we want must (AND logic)
     const query = {
       bool: {
-        must,
+        must: [...must],
         ...(should.length ? { should, minimum_should_match: 1 } : {}),
         ...(filter.length ? { filter } : {})
       }
@@ -216,7 +252,7 @@ exports.getEmailAccounts = async (req, res) => {
       next_search_after = hits[hits.length - 1].sort;
     }
 
-    console.log(`Found ${hits.length} results for website search: ${website}`);
+    console.log(`Found ${hits.length} results for email search: ${email}`);
 
     res.json({
       success: true,
