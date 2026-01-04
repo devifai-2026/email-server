@@ -35,19 +35,25 @@ exports.getEmailAccounts = async (req, res) => {
       role,
       website,
       limit = 100,
-      search_after = null,  // Accept search_after from client
-      sort_field = "email",  // Default sort field
-      sort_order = "asc",    // Default sort order
-      ...otherFilters
+      search_after = null,
+      // Support both parameter naming conventions
+      sort_field = "email",
+      sort_order = "asc",
+      sort = null,  // Old style: sort=name
+      order = "asc" // Old style: order=asc
     } = req.query;
 
-    const size = Math.min(parseInt(limit) || 100, 500); // Max 500 per page for performance
+    // Determine which sorting parameters to use
+    const sortField = sort_field || sort || "email"; // Priority: sort_field > sort > default "email"
+    const sortDirection = sort_order || order || "asc"; // Priority: sort_order > order > default "asc"
+
+    const size = Math.min(parseInt(limit) || 100, 500);
 
     /* ---------- SORT CONFIG ---------- */
     // Always sort by a unique field last for consistent pagination
-    const sort = [
-      { [sort_field]: { "order": sort_order, "missing": "_last" } },
-      { "_id": "asc" }  // Ensure unique sorting for consistent results
+    const sortConfig = [
+      { [sortField]: { "order": sortDirection, "missing": "_last" } },
+      { "_id": "asc" }
     ];
 
     const must = [];
@@ -61,10 +67,10 @@ exports.getEmailAccounts = async (req, res) => {
         .toString()
         .trim()
         .toLowerCase()
-        .replace(/^www\./, '')           // Remove www. prefix
-        .replace(/^https?:\/\//, '')     // Remove http:// or https://
-        .replace(/\/$/, '')              // Remove trailing slash
-        .replace(/^www\./, '');          // Remove www. again in case it was after protocol
+        .replace(/^www\./, '')
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, '')
+        .replace(/^www\./, '');
     };
 
     /* ---------- EMAIL FILTER - IMPROVED LOGIC ---------- */
@@ -72,21 +78,21 @@ exports.getEmailAccounts = async (req, res) => {
       const values = email.split(",").map(v => v.trim().toLowerCase());
       
       values.forEach(emailValue => {
-        // Check if it's a full email address (contains @)
+        // If it contains @, check if it's a complete email or just domain
         if (emailValue.includes('@')) {
-          // If it's a complete email with @domain.com, do exact match
-          if (emailValue.match(/@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
-            filter.push({ term: { email: emailValue } });
-          } 
           // If it's just @domain.com (searching for all emails from domain)
-          else if (emailValue.startsWith('@')) {
+          if (emailValue.startsWith('@')) {
             const domain = emailValue.substring(1); // Remove @
             should.push(
               { wildcard: { email: `*@${domain}` } },
               { wildcard: { email: `*@*.${domain}` } }
             );
+          } 
+          // If it's a complete email address, do exact match
+          else if (emailValue.includes('.')) {
+            filter.push({ term: { email: emailValue } });
           }
-          // Handle partial email searches
+          // Handle partial email with @
           else {
             should.push(
               { wildcard: { email: `*${emailValue}*` } },
@@ -96,15 +102,15 @@ exports.getEmailAccounts = async (req, res) => {
         } 
         // If no @ symbol, could be username or domain
         else {
-          // Check if it looks like a domain (contains .)
-          if (emailValue.includes('.')) {
+          // Check if it looks like a domain (contains . and no special characters)
+          if (emailValue.includes('.') && /^[a-zA-Z0-9.-]+$/.test(emailValue)) {
             // Search for emails ending with this domain
             should.push(
               { wildcard: { email: `*@${emailValue}` } },
               { wildcard: { email: `*@*.${emailValue}` } }
             );
           } else {
-            // Probably a username - search anywhere in email
+            // Probably a username or partial email - search anywhere in email
             should.push(
               { wildcard: { email: `*${emailValue}*` } },
               { match_phrase_prefix: { email: emailValue } }
@@ -112,6 +118,8 @@ exports.getEmailAccounts = async (req, res) => {
           }
         }
       });
+      
+      console.log(`Email search for: "${email}" - parsed as:`, values);
     }
 
     /* ---------- WEBSITE FILTER - HANDLE WWW. PREFIX ---------- */
@@ -120,7 +128,6 @@ exports.getEmailAccounts = async (req, res) => {
       
       console.log("Searching for domains:", domains);
       
-      // We need to match both with and without www. prefix
       const domainConditions = [];
       
       domains.forEach(domain => {
@@ -147,17 +154,9 @@ exports.getEmailAccounts = async (req, res) => {
       const companyNames = companyname.split(",").map(v => v.trim().toLowerCase());
       
       if (companyNames.length === 1) {
-        filter.push({ 
-          term: { 
-            companyname: companyNames[0] 
-          } 
-        });
+        filter.push({ term: { companyname: companyNames[0] } });
       } else {
-        filter.push({ 
-          terms: { 
-            companyname: companyNames 
-          } 
-        });
+        filter.push({ terms: { companyname: companyNames } });
       }
     }
 
@@ -184,25 +183,10 @@ exports.getEmailAccounts = async (req, res) => {
       }
     }
 
-    /* ---------- HANDLE OTHER DYNAMIC FILTERS ---------- */
-    Object.entries(otherFilters).forEach(([key, value]) => {
-      if (value && key !== 'limit' && key !== 'search_after' && key !== 'sort_field' && key !== 'sort_order') {
-        const values = value.split(",").map(v => v.trim().toLowerCase());
-        
-        if (values.length === 1) {
-          filter.push({ term: { [key]: values[0] } });
-        } else {
-          filter.push({ terms: { [key]: values } });
-        }
-      }
-    });
-
     /* ---------- QUERY BUILD ---------- */
-    // For email search, we want to use should (OR logic) to match different patterns
-    // For other filters, we want must (AND logic)
     const query = {
       bool: {
-        must: [...must],
+        must,
         ...(should.length ? { should, minimum_should_match: 1 } : {}),
         ...(filter.length ? { filter } : {})
       }
@@ -212,7 +196,7 @@ exports.getEmailAccounts = async (req, res) => {
 
     const body = {
       size,
-      sort,
+      sort: sortConfig,
       track_total_hits: true,
       query: must.length || should.length || filter.length ? query : { match_all: {} }
     };
@@ -242,7 +226,7 @@ exports.getEmailAccounts = async (req, res) => {
     // Prepare data and get next cursor
     const data = hits.map(hit => ({
       _id: hit._id,
-      sort: hit.sort,  // Include sort values for pagination
+      sort: hit.sort,
       ...hit._source
     }));
 
@@ -252,14 +236,14 @@ exports.getEmailAccounts = async (req, res) => {
       next_search_after = hits[hits.length - 1].sort;
     }
 
-    console.log(`Found ${hits.length} results for email search: ${email}`);
+    console.log(`Found ${hits.length} results for email search: "${email}"`);
 
     res.json({
       success: true,
       total,
       count: data.length,
       limit: size,
-      next_search_after,  // Cursor for next page
+      next_search_after,
       data,
       has_more: next_search_after !== null
     });
@@ -267,7 +251,6 @@ exports.getEmailAccounts = async (req, res) => {
   } catch (err) {
     console.error("Search error:", err.response?.data || err.message);
     
-    // Check for Elasticsearch window limit error
     if (err.response?.data?.error?.type === "illegal_argument_exception" && 
         err.response.data.error.reason.includes("Result window is too large")) {
       return res.status(400).json({
