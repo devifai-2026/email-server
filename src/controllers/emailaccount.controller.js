@@ -452,14 +452,47 @@ exports.getMaskedAccounts = async (req, res) => {
       return res.status(400).json({ message: "No valid domains provided" });
     }
 
-    if (emailParams.some((param) => param.includes("@"))) {
-      // If any parameter contains "@", treat all as full emails
-      // Use term query for exact matching
-      const emailQueries = emailParams.map((emailParam) => ({
-        term: {
-          email: emailParam.toLowerCase(),
-        },
-      }));
+    // Helper function to check if it's likely a domain
+    const isLikelyDomain = (param) => {
+      const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+      return param.includes('.') && domainRegex.test(param) && !param.includes('@');
+    };
+
+    // Helper function to normalize website
+    const normalizeWebsite = (website) => {
+      if (!website) return "";
+      return website
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replace(/^www\./, "")
+        .replace(/^https?:\/\//, "")
+        .replace(/\/$/, "");
+    };
+
+    // Check what type of search we're doing
+    const allAreDomains = emailParams.every(param => isLikelyDomain(param));
+    const anyHasAtSymbol = emailParams.some(param => param.includes("@"));
+
+    if (anyHasAtSymbol) {
+      // If any parameter contains "@", treat all as email searches
+      const emailQueries = emailParams.map((emailParam) => {
+        if (emailParam.includes("@")) {
+          // Full email address - exact match
+          return {
+            term: {
+              email: emailParam.toLowerCase(),
+            },
+          };
+        } else {
+          // Partial email without @ - search anywhere in email
+          return {
+            wildcard: {
+              email: `*${emailParam.toLowerCase()}*`,
+            },
+          };
+        }
+      });
 
       body = {
         size: MAX_LIMIT,
@@ -472,26 +505,17 @@ exports.getMaskedAccounts = async (req, res) => {
           },
         },
       };
-    } else {
-      // All parameters are domains - search for emails ending with these domains (exact match)
-      const domainQueries = emailParams.map((domain) => {
-        // Normalize domain (remove www. if present)
-        const normalizedDomain = domain.toLowerCase().replace(/^www\./, "");
-
-        // For exact match of domain, we need to match emails ending with @domain.com
-        // We'll use regexp for exact domain match
-        return {
-          regexp: {
-            email: {
-              value: `.*@${normalizedDomain.replace(
-                /[.*+?^${}()|[\]\\]/g,
-                "\\$&"
-              )}$`,
-              flags: "ALL",
-              case_insensitive: true,
-            },
-          },
-        };
+    } else if (allAreDomains) {
+      // All parameters are domains - search in website field
+      const websiteQueries = emailParams.flatMap((domain) => {
+        const normalizedDomain = normalizeWebsite(domain);
+        
+        // Create queries for website and website_normalized fields
+        return [
+          { term: { website_normalized: normalizedDomain } },
+          { term: { website: normalizedDomain } },
+          { term: { website: `www.${normalizedDomain}` } }
+        ];
       });
 
       body = {
@@ -500,7 +524,47 @@ exports.getMaskedAccounts = async (req, res) => {
         track_total_hits: true,
         query: {
           bool: {
-            should: domainQueries,
+            should: websiteQueries,
+            minimum_should_match: 1,
+          },
+        },
+      };
+    } else {
+      // Mixed or unclear - search in both email and website fields
+      const mixedQueries = emailParams.flatMap((param) => {
+        const queries = [];
+        
+        // Search in email field
+        queries.push({
+          wildcard: {
+            email: `*${param.toLowerCase()}*`,
+          },
+        });
+        
+        // Search in website field
+        queries.push({
+          wildcard: {
+            website: `*${param.toLowerCase()}*`,
+          },
+        });
+        
+        // Search in website_normalized field
+        queries.push({
+          wildcard: {
+            website_normalized: `*${param.toLowerCase()}*`,
+          },
+        });
+        
+        return queries;
+      });
+
+      body = {
+        size: MAX_LIMIT,
+        from: from,
+        track_total_hits: true,
+        query: {
+          bool: {
+            should: mixedQueries,
             minimum_should_match: 1,
           },
         },
@@ -525,81 +589,88 @@ exports.getMaskedAccounts = async (req, res) => {
     const hits = data.hits.hits;
     const totalCount = data.hits.total?.value || 0;
 
-    // If no results found with regex, try alternative approach with wildcard
-    if (
-      hits.length === 0 &&
-      emailParams.length > 0 &&
-      !emailParams.some((p) => p.includes("@"))
-    ) {
-      console.log("No results with regex, trying wildcard approach...");
+    // If no results found and we searched by website, try alternative approach
+    if (hits.length === 0 && allAreDomains) {
+      console.log("No results with website search, trying domain in email as fallback...");
 
-      // Try wildcard query as fallback
-      const wildcardQueries = emailParams.map((domain) => {
-        const normalizedDomain = domain.toLowerCase().replace(/^www\./, "");
-        return {
-          wildcard: {
-            email: `*@${normalizedDomain}`,
+      // Try searching for emails ending with these domains as fallback
+      const fallbackQueries = emailParams.flatMap((domain) => {
+        const normalizedDomain = normalizeWebsite(domain);
+        return [
+          {
+            wildcard: {
+              email: `*@${normalizedDomain}`,
+            },
           },
-        };
+          {
+            wildcard: {
+              email: `*@*.${normalizedDomain}`,
+            },
+          }
+        ];
       });
 
-      const wildcardBody = {
+      const fallbackBody = {
         size: MAX_LIMIT,
         from: from,
         track_total_hits: true,
         query: {
           bool: {
-            should: wildcardQueries,
+            should: fallbackQueries,
             minimum_should_match: 1,
           },
         },
       };
 
       console.log(
-        "Trying wildcard query:",
-        JSON.stringify(wildcardBody, null, 2)
+        "Trying fallback query (domain in email):",
+        JSON.stringify(fallbackBody, null, 2)
       );
 
-      const wildcardResponse = await axios.post(
-        `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
-        wildcardBody,
-        {
-          auth: AUTH,
-          headers: {
-            "Content-Type": "application/json",
-          },
+      try {
+        const fallbackResponse = await axios.post(
+          `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
+          fallbackBody,
+          {
+            auth: AUTH,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          }
+        );
+
+        const fallbackHits = fallbackResponse.data.hits.hits;
+        const fallbackTotal = fallbackResponse.data.hits.total?.value || 0;
+
+        console.log(`Found ${fallbackHits.length} results with fallback query`);
+
+        if (fallbackHits.length > 0) {
+          // Use fallback results
+          const rows = fallbackHits.map((h) => h._source);
+          const normalEmails = rows.slice(0, 10);
+          const maskedEmails = rows.slice(10).map((r) => ({
+            ...r,
+            email: maskEmail(r.email),
+            masked: true,
+          }));
+
+          return res.json({
+            success: true,
+            data: [...normalEmails, ...maskedEmails],
+            total: fallbackTotal,
+            returned: rows.length,
+            normalCount: normalEmails.length,
+            maskedCount: maskedEmails.length,
+            page: parseInt(page),
+            totalPages: Math.ceil(fallbackTotal / MAX_LIMIT),
+            limit: MAX_LIMIT,
+            searchedDomains: emailParams,
+            domainCount: emailParams.length,
+            queryType: "email_domain_fallback",
+          });
         }
-      );
-
-      const wildcardHits = wildcardResponse.data.hits.hits;
-      const wildcardTotal = wildcardResponse.data.hits.total?.value || 0;
-
-      console.log(`Found ${wildcardHits.length} results with wildcard query`);
-
-      if (wildcardHits.length > 0) {
-        // Use wildcard results
-        const rows = wildcardHits.map((h) => h._source);
-        const normalEmails = rows.slice(0, 10);
-        const maskedEmails = rows.slice(10).map((r) => ({
-          ...r,
-          email: maskEmail(r.email),
-          masked: true,
-        }));
-
-        return res.json({
-          success: true,
-          data: [...normalEmails, ...maskedEmails],
-          total: wildcardTotal,
-          returned: rows.length,
-          normalCount: normalEmails.length,
-          maskedCount: maskedEmails.length,
-          page: parseInt(page),
-          totalPages: Math.ceil(wildcardTotal / MAX_LIMIT),
-          limit: MAX_LIMIT,
-          searchedDomains: emailParams,
-          domainCount: emailParams.length,
-          queryType: "wildcard",
-        });
+      } catch (fallbackError) {
+        console.error("Fallback query failed:", fallbackError.message);
       }
     }
 
@@ -624,9 +695,7 @@ exports.getMaskedAccounts = async (req, res) => {
       limit: MAX_LIMIT,
       searchedDomains: emailParams,
       domainCount: emailParams.length,
-      queryType: emailParams.some((p) => p.includes("@"))
-        ? "exact_email"
-        : "exact_domain",
+      queryType: anyHasAtSymbol ? "email" : (allAreDomains ? "website" : "mixed"),
     });
   } catch (err) {
     console.error(
