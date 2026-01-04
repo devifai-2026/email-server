@@ -34,16 +34,23 @@ exports.getEmailAccounts = async (req, res) => {
       name,
       role,
       website,
-      page = 1,
-      limit = 100
+      limit = 100,
+      search_after = null,
+      sortname = "email", // Keep sortname for backward compatibility
+      sortype = "asc"     // Keep sortype for backward compatibility
     } = req.query;
 
-    const pageNum = Math.max(parseInt(page) || 1, 1);
-    const size = Math.min(parseInt(limit) || 100, 1000);
-    const from = (pageNum - 1) * size;
+    const size = Math.min(parseInt(limit) || 100, 500);
 
-    /* ---------- SAFE SORT ---------- */
-    const sort = [{ email: "asc" }];
+    /* ---------- SORT CONFIG ---------- */
+    // Use sortname and sortype for compatibility with existing frontend
+    const sort_field = sortname || "email";
+    const sort_order = sortype || "asc";
+    
+    const sort = [
+      { [sort_field]: { "order": sort_order, "missing": "_last" } },
+      { "_id": "asc" }  // Ensure unique sorting
+    ];
 
     const must = [];
     const should = [];
@@ -56,10 +63,8 @@ exports.getEmailAccounts = async (req, res) => {
 
       values.forEach(value => {
         if (value.includes("@")) {
-          // ✅ real email
           should.push({ term: { email: value } });
         } else {
-          // ✅ domain → search website
           should.push({
             wildcard: {
               website: `*${value}`
@@ -69,7 +74,7 @@ exports.getEmailAccounts = async (req, res) => {
       });
     }
 
-    /* ---------- WEBSITE PARAM (CORRECT ONE) ---------- */
+    /* ---------- WEBSITE PARAM ---------- */
     if (website) {
       const domains = website.split(",").map(v =>
         v.trim().replace(/^www\./, "").toLowerCase()
@@ -106,12 +111,24 @@ exports.getEmailAccounts = async (req, res) => {
     };
 
     const body = {
-      from,
       size,
       sort,
       track_total_hits: true,
       query: must.length || should.length ? query : { match_all: {} }
     };
+
+    /* ---------- SEARCH_AFTER PAGINATION ---------- */
+    if (search_after && search_after !== "null") {
+      try {
+        const searchAfterArray = JSON.parse(search_after);
+        if (Array.isArray(searchAfterArray)) {
+          body.search_after = searchAfterArray;
+        }
+      } catch (e) {
+        console.error("Invalid search_after parameter:", e);
+        // Continue without search_after
+      }
+    }
 
     /* ---------- SEARCH ---------- */
     const response = await axios.post(
@@ -122,34 +139,58 @@ exports.getEmailAccounts = async (req, res) => {
 
     const hits = response.data.hits.hits;
     const total = response.data.hits.total.value;
-    const totalPages = Math.ceil(total / size);
 
+    // Prepare data
     const data = hits.map(hit => ({
       _id: hit._id,
       is_verified: false,
       ...hit._source
     }));
 
+    // Get next search_after cursor
+    let next_search_after = null;
+    if (hits.length > 0) {
+      next_search_after = hits[hits.length - 1].sort;
+    }
+
+    // Calculate has_more
+    const has_more = next_search_after !== null && data.length === size;
+
+    // For backward compatibility, calculate "page" and "totalPages"
+    // These are just estimates for UI display
+    const page = search_after ? 2 : 1; // Simplified for compatibility
+    const totalPages = Math.ceil(total / size);
+
     res.json({
       success: true,
       total,
-      totalPages,
-      page: pageNum,
-      limit: size,
       count: data.length,
+      limit: size,
+      page, // For backward compatibility
+      totalPages, // For backward compatibility
+      next_search_after,
+      has_more,
       data
     });
 
   } catch (err) {
     console.error("Search error:", err.response?.data || err.message);
+    
+    // Check for Elasticsearch window limit error
+    if (err.response?.data?.error?.type === "illegal_argument_exception" && 
+        err.response.data.error.reason.includes("Result window is too large")) {
+      return res.status(400).json({
+        success: false,
+        error: "Deep pagination not supported. Please use search_after pagination or apply filters."
+      });
+    }
+    
     res.status(500).json({
       success: false,
       error: err.response?.data || err.message
     });
   }
 };
-
-
 
 
 // ====== GET MASKED EMAILS ======
