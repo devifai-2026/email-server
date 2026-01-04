@@ -54,50 +54,58 @@ exports.getEmailAccounts = async (req, res) => {
     const should = [];
     const filter = [];
 
-    /* ---------- HELPER FUNCTION FOR EXACT MATCH ---------- */
-    const normalizeForExactMatch = (value) => {
-      return value
+    /* ---------- HELPER FUNCTION TO NORMALIZE WEBSITE ---------- */
+    const normalizeWebsite = (website) => {
+      if (!website) return '';
+      return website
         .toString()
         .trim()
         .toLowerCase()
-        .replace(/^www\./, '')
-        .replace(/^https?:\/\//, '')
-        .replace(/\/$/, ''); // Remove trailing slash
+        .replace(/^www\./, '')           // Remove www. prefix
+        .replace(/^https?:\/\//, '')     // Remove http:// or https://
+        .replace(/\/$/, '')              // Remove trailing slash
+        .replace(/^www\./, '');          // Remove www. again in case it was after protocol
     };
 
     /* ---------- EMAIL FILTER - EXACT MATCH ---------- */
     if (email) {
-      const values = email.split(",").map(v => normalizeForExactMatch(v));
+      const values = email.split(",").map(v => 
+        v.trim().toLowerCase()
+      );
       
-      // Try to match in multiple fields
-      values.forEach(value => {
-        if (value.includes("@")) {
-          // For email, use exact term match
-          filter.push({ term: { email: value } });
-        } else {
-          // For domain without @, try to match in both website and email domain
-          const emailRegex = new RegExp(`@${value.replace(/\./g, '\\.')}$`);
-          
-          should.push(
-            // Exact match on website field
-            { term: { website: value } },
-            // Match email domain part
-            { regexp: { email: emailRegex } }
-          );
-        }
-      });
+      if (values.length === 1) {
+        filter.push({ term: { email: values[0] } });
+      } else {
+        filter.push({ terms: { email: values } });
+      }
     }
 
-    /* ---------- WEBSITE FILTER - EXACT MATCH ---------- */
+    /* ---------- WEBSITE FILTER - HANDLE WWW. PREFIX ---------- */
     if (website) {
-      const domains = website.split(",").map(v => normalizeForExactMatch(v));
+      const domains = website.split(",").map(v => normalizeWebsite(v));
       
-      // Use terms query for exact matching of multiple domains
-      filter.push({ 
-        terms: { 
-          website: domains 
-        } 
+      console.log("Searching for domains:", domains);
+      
+      // We need to match both with and without www. prefix
+      const domainConditions = [];
+      
+      domains.forEach(domain => {
+        // Match exact domain (without www.)
+        domainConditions.push({ term: { website_normalized: domain } });
+        
+        // Also match if stored with www. prefix
+        domainConditions.push({ term: { website: domain } });
+        domainConditions.push({ term: { website: `www.${domain}` } });
+        
+        // Match if stored without www. but we're searching with it
+        if (domain.startsWith('www.')) {
+          const withoutWWW = domain.replace(/^www\./, '');
+          domainConditions.push({ term: { website: withoutWWW } });
+          domainConditions.push({ term: { website_normalized: withoutWWW } });
+        }
       });
+      
+      should.push(...domainConditions);
     }
 
     /* ---------- COMPANY NAME - CASE INSENSITIVE EXACT MATCH ---------- */
@@ -119,7 +127,7 @@ exports.getEmailAccounts = async (req, res) => {
       }
     }
 
-    /* ---------- NAME - PARTIAL MATCH (KEEPING AS IS) ---------- */
+    /* ---------- NAME - PARTIAL MATCH ---------- */
     if (name) {
       const names = name.split(",").map(v => v.trim());
       
@@ -164,6 +172,8 @@ exports.getEmailAccounts = async (req, res) => {
       }
     };
 
+    console.log("Elasticsearch query:", JSON.stringify(query, null, 2));
+
     const body = {
       size,
       sort,
@@ -205,6 +215,8 @@ exports.getEmailAccounts = async (req, res) => {
     if (hits.length > 0) {
       next_search_after = hits[hits.length - 1].sort;
     }
+
+    console.log(`Found ${hits.length} results for website search: ${website}`);
 
     res.json({
       success: true,
