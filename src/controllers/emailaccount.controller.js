@@ -35,27 +35,25 @@ exports.getEmailAccounts = async (req, res) => {
       role,
       website,
       limit = 100,
-      search_after = null,
-      sortname = "email", // Keep sortname for backward compatibility
-      sortype = "asc"     // Keep sortype for backward compatibility
+      search_after = null,  // Accept search_after from client
+      sort_field = "email",  // Default sort field
+      sort_order = "asc",    // Default sort order
+      ...otherFilters
     } = req.query;
 
-    const size = Math.min(parseInt(limit) || 100, 500);
+    const size = Math.min(parseInt(limit) || 100, 500); // Max 500 per page for performance
 
     /* ---------- SORT CONFIG ---------- */
-    // Use sortname and sortype for compatibility with existing frontend
-    const sort_field = sortname || "email";
-    const sort_order = sortype || "asc";
-    
+    // Always sort by a unique field last for consistent pagination
     const sort = [
       { [sort_field]: { "order": sort_order, "missing": "_last" } },
-      { "_id": "asc" }  // Ensure unique sorting
+      { "_id": "asc" }  // Ensure unique sorting for consistent results
     ];
 
     const must = [];
     const should = [];
 
-    /* ---------- EMAIL / DOMAIN FIX ---------- */
+    /* ---------- EMAIL FILTER ---------- */
     if (email) {
       const values = email.split(",").map(v =>
         v.trim().replace(/^www\./, "").toLowerCase()
@@ -74,7 +72,7 @@ exports.getEmailAccounts = async (req, res) => {
       });
     }
 
-    /* ---------- WEBSITE PARAM ---------- */
+    /* ---------- WEBSITE FILTER ---------- */
     if (website) {
       const domains = website.split(",").map(v =>
         v.trim().replace(/^www\./, "").toLowerCase()
@@ -102,6 +100,29 @@ exports.getEmailAccounts = async (req, res) => {
       must.push({ match_phrase_prefix: { role } });
     }
 
+    /* ---------- HANDLE OTHER DYNAMIC FILTERS ---------- */
+    Object.entries(otherFilters).forEach(([key, value]) => {
+      if (value && key !== 'limit' && key !== 'search_after' && key !== 'sort_field' && key !== 'sort_order') {
+        if (key.includes('.')) {
+          // Handle nested fields
+          const nestedPath = key.split('.');
+          let nestedQuery = {};
+          let current = nestedQuery;
+          nestedPath.forEach((path, index) => {
+            if (index === nestedPath.length - 1) {
+              current[path] = value;
+            } else {
+              current[path] = {};
+              current = current[path];
+            }
+          });
+          must.push(nestedQuery);
+        } else {
+          must.push({ match_phrase_prefix: { [key]: value } });
+        }
+      }
+    });
+
     /* ---------- QUERY BUILD ---------- */
     const query = {
       bool: {
@@ -118,7 +139,7 @@ exports.getEmailAccounts = async (req, res) => {
     };
 
     /* ---------- SEARCH_AFTER PAGINATION ---------- */
-    if (search_after && search_after !== "null") {
+    if (search_after) {
       try {
         const searchAfterArray = JSON.parse(search_after);
         if (Array.isArray(searchAfterArray)) {
@@ -126,7 +147,6 @@ exports.getEmailAccounts = async (req, res) => {
         }
       } catch (e) {
         console.error("Invalid search_after parameter:", e);
-        // Continue without search_after
       }
     }
 
@@ -140,10 +160,10 @@ exports.getEmailAccounts = async (req, res) => {
     const hits = response.data.hits.hits;
     const total = response.data.hits.total.value;
 
-    // Prepare data
+    // Prepare data and get next cursor
     const data = hits.map(hit => ({
       _id: hit._id,
-      is_verified: false,
+      sort: hit.sort,  // Include sort values for pagination
       ...hit._source
     }));
 
@@ -153,24 +173,14 @@ exports.getEmailAccounts = async (req, res) => {
       next_search_after = hits[hits.length - 1].sort;
     }
 
-    // Calculate has_more
-    const has_more = next_search_after !== null && data.length === size;
-
-    // For backward compatibility, calculate "page" and "totalPages"
-    // These are just estimates for UI display
-    const page = search_after ? 2 : 1; // Simplified for compatibility
-    const totalPages = Math.ceil(total / size);
-
     res.json({
       success: true,
       total,
       count: data.length,
       limit: size,
-      page, // For backward compatibility
-      totalPages, // For backward compatibility
-      next_search_after,
-      has_more,
-      data
+      next_search_after,  // Cursor for next page
+      data,
+      has_more: next_search_after !== null
     });
 
   } catch (err) {
@@ -187,10 +197,11 @@ exports.getEmailAccounts = async (req, res) => {
     
     res.status(500).json({
       success: false,
-      error: err.response?.data || err.message
+      error: err.response?.data?.message || err.message
     });
   }
 };
+
 
 
 // ====== GET MASKED EMAILS ======
