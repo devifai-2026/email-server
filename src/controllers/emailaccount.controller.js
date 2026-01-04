@@ -162,18 +162,15 @@ exports.getMaskedAccounts = async (req, res) => {
     const MAX_LIMIT = Math.min(parseInt(limit), 100);
     const from = (parseInt(page) - 1) * MAX_LIMIT;
 
-    // Log the incoming query for debugging
     console.log("Searching for:", email);
 
     let body;
     
-    // Check if it's a full email or just a domain
     if (email.includes("@")) {
-      // Full email - use match query
+      // Full email - use match query (no sorting by created_at)
       body = {
         size: MAX_LIMIT,
         from: from,
-        sort: [{ created_at: "desc" }],
         query: {
           match: {
             email: email
@@ -181,11 +178,10 @@ exports.getMaskedAccounts = async (req, res) => {
         }
       };
     } else {
-      // Domain only - use regexp query for better performance than wildcard
+      // Domain only - use regexp query (no sorting by created_at)
       body = {
         size: MAX_LIMIT,
         from: from,
-        sort: [{ created_at: "desc" }],
         query: {
           regexp: {
             email: {
