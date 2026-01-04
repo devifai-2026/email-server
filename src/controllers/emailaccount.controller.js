@@ -166,29 +166,48 @@ exports.getMaskedAccounts = async (req, res) => {
 
     let body;
     
-    if (email.includes("@")) {
-      // Full email - use match query (no sorting by created_at)
+    // Check if multiple domains are provided (comma-separated)
+    const emailParams = email.split(',').map(e => e.trim()).filter(e => e);
+    
+    if (emailParams.length === 0) {
+      return res.status(400).json({ message: "No valid domains provided" });
+    }
+
+    if (emailParams.some(param => param.includes("@"))) {
+      // If any parameter contains "@", treat all as full emails
+      const emailQueries = emailParams.map(emailParam => ({
+        match: { email: emailParam }
+      }));
+      
       body = {
         size: MAX_LIMIT,
         from: from,
         query: {
-          match: {
-            email: email
+          bool: {
+            should: emailQueries,
+            minimum_should_match: 1
           }
         }
       };
     } else {
-      // Domain only - use regexp query (no sorting by created_at)
+      // All parameters are domains - search for emails ending with any of these domains
+      const domainQueries = emailParams.map(domain => ({
+        regexp: {
+          email: {
+            value: `.*@${domain}.*`,
+            flags: "ALL",
+            case_insensitive: true
+          }
+        }
+      }));
+      
       body = {
         size: MAX_LIMIT,
         from: from,
         query: {
-          regexp: {
-            email: {
-              value: `.*@${email}.*`,
-              flags: "ALL",
-              case_insensitive: true
-            }
+          bool: {
+            should: domainQueries,
+            minimum_should_match: 1
           }
         }
       };
@@ -230,6 +249,8 @@ exports.getMaskedAccounts = async (req, res) => {
       page: parseInt(page),
       totalPages: Math.ceil(totalCount / MAX_LIMIT),
       limit: MAX_LIMIT,
+      searchedDomains: emailParams,
+      domainCount: emailParams.length
     });
   } catch (err) {
     console.error("getMaskedAccounts error:", err.response?.data || err.message);
