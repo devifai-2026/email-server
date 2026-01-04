@@ -8,7 +8,7 @@ const paymentSchema = new mongoose.Schema(
     currency: { type: String, default: "USD" },
     status: {
       type: String,
-      enum: ["pending", "completed", "failed"],
+      enum: ["pending", "completed", "failed", ],
       default: "pending",
     },
     method: { type: String }, // e.g. PayPal, Stripe, etc.

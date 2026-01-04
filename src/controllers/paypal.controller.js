@@ -139,7 +139,26 @@ exports.captureOrder = async (req, res) => {
       metadata: session.metadata
     });
 
-    if (session.payment_status !== 'paid') {
+    // Convert Stripe status to your model's allowed status
+    const mapStripeStatusToModel = (stripeStatus) => {
+      switch (stripeStatus.toLowerCase()) {
+        case 'paid':
+        case 'succeeded':
+          return 'completed';
+        case 'pending':
+          return 'pending';
+        case 'failed':
+        case 'canceled':
+        case 'expired':
+          return 'failed';
+        default:
+          return 'pending';
+      }
+    };
+
+    const paymentStatus = mapStripeStatusToModel(session.payment_status);
+
+    if (paymentStatus !== 'completed') {
       return res.status(400).json({ 
         success: false,
         message: `Payment not completed. Status: ${session.payment_status}` 
@@ -196,13 +215,13 @@ exports.captureOrder = async (req, res) => {
       });
     }
 
-    // Create payment record
+    // Create payment record - IMPORTANT: Use 'completed' not 'paid'
     const payment = await Payment.create({
       user: user._id,
       useremail: user.email,
       amount: plan.price,
       currency: session.currency.toUpperCase(),
-      status: session.payment_status,
+      status: paymentStatus, // Use the converted status
       method: "Stripe",
       transactionId: session.id,
       plan: planId,
@@ -256,7 +275,7 @@ exports.captureOrder = async (req, res) => {
 
     await user.save();
 
-    // Send confirmation email
+    // Send confirmation email - also update email to use correct status
     try {
       await sendSubscriptionSuccessEmail(
         user.email,
@@ -264,7 +283,7 @@ exports.captureOrder = async (req, res) => {
         plan.name,
         plan.price,
         session.currency.toUpperCase(),
-        session.payment_status,
+        paymentStatus, // Use the converted status
         "Stripe",
         session.id,
         expiryDate
@@ -330,8 +349,28 @@ exports.stripeWebhook = async (req, res) => {
       const session = event.data.object;
       console.log('Webhook: Checkout session completed:', session.id);
       
-      // You can process the payment here in background
-      // This ensures payment is captured even if user closes browser
+      // Helper function to convert status
+      const mapStripeStatus = (stripeStatus) => {
+        switch (stripeStatus.toLowerCase()) {
+          case 'paid':
+          case 'succeeded':
+            return 'completed';
+          case 'pending':
+            return 'pending';
+          case 'failed':
+          case 'canceled':
+          case 'expired':
+            return 'failed';
+          default:
+            return 'pending';
+        }
+      };
+      
+      // Process the payment here if using webhooks
+      if (session.payment_status === 'paid') {
+        console.log('Processing paid webhook for session:', session.id);
+        // You would call your captureOrder logic here but adapt it for webhook use
+      }
       break;
       
     case 'payment_intent.succeeded':
