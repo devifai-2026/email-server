@@ -52,73 +52,105 @@ exports.getEmailAccounts = async (req, res) => {
 
     const must = [];
     const should = [];
+    const filter = [];
 
-    /* ---------- EMAIL FILTER ---------- */
+    /* ---------- HELPER FUNCTION FOR EXACT MATCH ---------- */
+    const normalizeForExactMatch = (value) => {
+      return value
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replace(/^www\./, '')
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, ''); // Remove trailing slash
+    };
+
+    /* ---------- EMAIL FILTER - EXACT MATCH ---------- */
     if (email) {
-      const values = email.split(",").map(v =>
-        v.trim().replace(/^www\./, "").toLowerCase()
-      );
-
+      const values = email.split(",").map(v => normalizeForExactMatch(v));
+      
+      // Try to match in multiple fields
       values.forEach(value => {
         if (value.includes("@")) {
-          should.push({ term: { email: value } });
+          // For email, use exact term match
+          filter.push({ term: { email: value } });
         } else {
-          should.push({
-            wildcard: {
-              website: `*${value}`
-            }
-          });
+          // For domain without @, try to match in both website and email domain
+          const emailRegex = new RegExp(`@${value.replace(/\./g, '\\.')}$`);
+          
+          should.push(
+            // Exact match on website field
+            { term: { website: value } },
+            // Match email domain part
+            { regexp: { email: emailRegex } }
+          );
         }
       });
     }
 
-    /* ---------- WEBSITE FILTER ---------- */
+    /* ---------- WEBSITE FILTER - EXACT MATCH ---------- */
     if (website) {
-      const domains = website.split(",").map(v =>
-        v.trim().replace(/^www\./, "").toLowerCase()
-      );
-
-      domains.forEach(domain => {
-        should.push({
-          wildcard: {
-            website: `*${domain}`
-          }
-        });
+      const domains = website.split(",").map(v => normalizeForExactMatch(v));
+      
+      // Use terms query for exact matching of multiple domains
+      filter.push({ 
+        terms: { 
+          website: domains 
+        } 
       });
     }
 
-    /* ---------- OTHER FILTERS ---------- */
+    /* ---------- COMPANY NAME - CASE INSENSITIVE EXACT MATCH ---------- */
     if (companyname) {
-      must.push({ match_phrase_prefix: { companyname } });
+      const companyNames = companyname.split(",").map(v => v.trim().toLowerCase());
+      
+      if (companyNames.length === 1) {
+        filter.push({ 
+          term: { 
+            companyname: companyNames[0] 
+          } 
+        });
+      } else {
+        filter.push({ 
+          terms: { 
+            companyname: companyNames 
+          } 
+        });
+      }
     }
 
+    /* ---------- NAME - PARTIAL MATCH (KEEPING AS IS) ---------- */
     if (name) {
-      must.push({ match_phrase_prefix: { name } });
+      const names = name.split(",").map(v => v.trim());
+      
+      names.forEach(n => {
+        should.push(
+          { match_phrase_prefix: { name: n } },
+          { wildcard: { name: `*${n}*` } }
+        );
+      });
     }
 
+    /* ---------- ROLE - CASE INSENSITIVE EXACT MATCH ---------- */
     if (role) {
-      must.push({ match_phrase_prefix: { role } });
+      const roles = role.split(",").map(v => v.trim().toLowerCase());
+      
+      if (roles.length === 1) {
+        filter.push({ term: { role: roles[0] } });
+      } else {
+        filter.push({ terms: { role: roles } });
+      }
     }
 
     /* ---------- HANDLE OTHER DYNAMIC FILTERS ---------- */
     Object.entries(otherFilters).forEach(([key, value]) => {
       if (value && key !== 'limit' && key !== 'search_after' && key !== 'sort_field' && key !== 'sort_order') {
-        if (key.includes('.')) {
-          // Handle nested fields
-          const nestedPath = key.split('.');
-          let nestedQuery = {};
-          let current = nestedQuery;
-          nestedPath.forEach((path, index) => {
-            if (index === nestedPath.length - 1) {
-              current[path] = value;
-            } else {
-              current[path] = {};
-              current = current[path];
-            }
-          });
-          must.push(nestedQuery);
+        const values = value.split(",").map(v => v.trim().toLowerCase());
+        
+        if (values.length === 1) {
+          filter.push({ term: { [key]: values[0] } });
         } else {
-          must.push({ match_phrase_prefix: { [key]: value } });
+          filter.push({ terms: { [key]: values } });
         }
       }
     });
@@ -127,7 +159,8 @@ exports.getEmailAccounts = async (req, res) => {
     const query = {
       bool: {
         must,
-        ...(should.length ? { should, minimum_should_match: 1 } : {})
+        ...(should.length ? { should, minimum_should_match: 1 } : {}),
+        ...(filter.length ? { filter } : {})
       }
     };
 
@@ -135,7 +168,7 @@ exports.getEmailAccounts = async (req, res) => {
       size,
       sort,
       track_total_hits: true,
-      query: must.length || should.length ? query : { match_all: {} }
+      query: must.length || should.length || filter.length ? query : { match_all: {} }
     };
 
     /* ---------- SEARCH_AFTER PAGINATION ---------- */
@@ -201,7 +234,6 @@ exports.getEmailAccounts = async (req, res) => {
     });
   }
 };
-
 
 
 // ====== GET MASKED EMAILS ======
