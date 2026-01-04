@@ -2,38 +2,68 @@ const Stripe = require('stripe');
 const Payment = require("../models/payment.model");
 const User = require("../models/user.model");
 const Plan = require("../models/plans.model");
+
+// Initialize Stripe with your secret key
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+
 const { sendSubscriptionSuccessEmail } = require("../utils/mailer");
 
 exports.createOrder = async (req, res) => {
-  const { planId } = req.body;
-
-  if (!planId) {
-    return res.status(400).json({ message: "Invalid plan ID provided" });
-  }
-
-  const plan = await Plan.findById(planId);
-  if (!plan) {
-    return res.status(404).json({ message: "Plan not found" });
-  }
-
-  // Fetch the user
-  const user = await User.findById(req.user.id);
-
-  // Check active subscription
-  if (
-    user.subscription &&
-    user.subscription.length > 0 &&
-    user.subscription[user.subscription.length - 1]?.plan?.price > 0 &&
-    (!user.subscription[user.subscription.length - 1]?.expiresAt || 
-     user.subscription[user.subscription.length - 1]?.expiresAt > new Date())
-  ) {
-    return res.status(400).json({
-      message: "You already have an active subscription. Please wait for it to expire before subscribing again.",
-    });
-  }
-
   try {
+    const { planId } = req.body;
+
+    if (!planId) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Invalid plan ID provided" 
+      });
+    }
+
+    const plan = await Plan.findById(planId);
+    if (!plan) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Plan not found" 
+      });
+    }
+
+    // Fetch the user
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: "User not found" 
+      });
+    }
+
+    // Check active subscription
+    if (user.subscription && user.subscription.length > 0) {
+      const latestSubscription = user.subscription[user.subscription.length - 1];
+      
+      if (latestSubscription?.plan?.price > 0) {
+        const isActive = !latestSubscription.expiresAt || 
+                        latestSubscription.expiresAt > new Date();
+        
+        if (isActive) {
+          return res.status(400).json({
+            success: false,
+            message: "You already have an active subscription. Please wait for it to expire before subscribing again.",
+          });
+        }
+      }
+    }
+
+    // Convert price to cents for Stripe
+    const amountInCents = Math.round(plan.price * 100);
+    
+    // Validate amount (Stripe minimum is $0.50 USD)
+    if (amountInCents < 50) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount must be at least $0.50 USD"
+      });
+    }
+
     // Create Stripe Checkout Session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -48,30 +78,38 @@ exports.createOrder = async (req, res) => {
                 planId: plan._id.toString(),
               },
             },
-            unit_amount: Math.round(plan.price * 100), // Convert dollars to cents
+            unit_amount: amountInCents,
           },
           quantity: 1,
         },
       ],
       mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL}/emailFinder?payment=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/emailFinder/pricing`,
+      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/pricing`,
       customer_email: user.email,
       metadata: {
-        userId: req.user.id,
+        userId: req.user.id.toString(),
         planId: plan._id.toString(),
         userEmail: user.email,
       },
+      shipping_address_collection: {
+        allowed_countries: ['US', 'CA', 'GB', 'AU', 'IN'], // Add countries as needed
+      },
+      billing_address_collection: 'required',
+      expires_at: Math.floor(Date.now() / 1000) + (30 * 60), // 30 minutes expiry
     });
 
     res.status(200).json({
+      success: true,
       id: session.id,
       link: session.url,
+      sessionId: session.id,
     });
 
   } catch (error) {
     console.error("Error creating Stripe checkout session:", error);
     res.status(500).json({
+      success: false,
       message: "Failed to create payment session",
       error: error.message,
     });
@@ -79,56 +117,107 @@ exports.createOrder = async (req, res) => {
 };
 
 exports.captureOrder = async (req, res) => {
-  const { sessionId } = req.body;
-  const userId = req.user?.id;
-
-  if (!sessionId) {
-    return res.status(400).json({ message: "Session ID is required" });
-  }
-
   try {
+    const { sessionId } = req.body;
+    const userId = req.user?.id;
+
+    if (!sessionId) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Session ID is required" 
+      });
+    }
+
     // Retrieve the Stripe session to verify payment
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['payment_intent', 'customer']
+    });
+
+    console.log('Stripe session retrieved:', {
+      id: session.id,
+      payment_status: session.payment_status,
+      metadata: session.metadata
+    });
 
     if (session.payment_status !== 'paid') {
-      return res.status(400).json({ message: "Payment not completed" });
+      return res.status(400).json({ 
+        success: false,
+        message: `Payment not completed. Status: ${session.payment_status}` 
+      });
     }
 
-    // Get planId from session metadata (more reliable)
+    // Get planId from session metadata
     const planId = session.metadata?.planId;
     if (!planId) {
-      return res.status(400).json({ message: "Plan ID not found in session" });
+      return res.status(400).json({ 
+        success: false,
+        message: "Plan ID not found in session metadata" 
+      });
     }
 
+    // Find the plan
     const plan = await Plan.findById(planId);
     if (!plan) {
-      return res.status(404).json({ message: "Plan not found" });
+      return res.status(404).json({ 
+        success: false,
+        message: "Plan not found" 
+      });
     }
 
-    const user = await User.findById(userId || session.metadata?.userId);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    // Find the user - use metadata userId if not in request
+    const targetUserId = userId || session.metadata?.userId;
+    if (!targetUserId) {
+      return res.status(400).json({ 
+        success: false,
+        message: "User ID not found" 
+      });
     }
-    
-    // Save payment record
-    await Payment.create({
+
+    const user = await User.findById(targetUserId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: "User not found" 
+      });
+    }
+
+    // Check if payment already recorded
+    const existingPayment = await Payment.findOne({ transactionId: session.id });
+    if (existingPayment) {
+      return res.status(200).json({
+        success: true,
+        message: "Payment already processed",
+        data: {
+          user: {
+            ...user.toObject(),
+            subscription: user.subscription
+          }
+        }
+      });
+    }
+
+    // Create payment record
+    const payment = await Payment.create({
       user: user._id,
       useremail: user.email,
       amount: plan.price,
-      currency: session.currency,
+      currency: session.currency.toUpperCase(),
       status: session.payment_status,
       method: "Stripe",
       transactionId: session.id,
       plan: planId,
+      customerId: session.customer,
+      paymentIntentId: session.payment_intent?.id,
       details: session,
     });
 
-    // Update subscription
+    // Calculate subscription expiry
     const now = new Date();
-    const expiry = new Date();
-    expiry.setDate(now.getDate() + plan.duration);
+    const expiryDate = new Date(now);
+    expiryDate.setDate(now.getDate() + (plan.duration || 30)); // Default 30 days if not specified
 
-    user.subscription.push({
+    // Create subscription object
+    const subscriptionData = {
       plan: {
         id: plan._id.toString(),
         name: plan.name,
@@ -137,10 +226,20 @@ exports.captureOrder = async (req, res) => {
         duration: plan.duration,
         features: plan.features,
       },
-      subscribedAt: new Date(),
-      expiresAt: expiry,
-    });
+      subscribedAt: now,
+      expiresAt: expiryDate,
+      paymentId: payment._id,
+      transactionId: session.id,
+      status: 'active'
+    };
 
+    // Update user subscription
+    if (!user.subscription) {
+      user.subscription = [];
+    }
+    
+    user.subscription.push(subscriptionData);
+    
     user.currentPlan = {
       id: plan._id.toString(),
       name: plan.name,
@@ -150,36 +249,99 @@ exports.captureOrder = async (req, res) => {
       features: plan.features,
     };
 
+    // Update user credits if plan has credits
+    if (plan.credits) {
+      user.credits = (user.credits || 0) + plan.credits;
+    }
+
     await user.save();
 
-    // Send email
-    await sendSubscriptionSuccessEmail(
-      user.email,
-      user.fullname || user.email,
-      plan.name,
-      plan.price,
-      session.currency,
-      session.payment_status,
-      "Stripe",
-      session.id
-    );
+    // Send confirmation email
+    try {
+      await sendSubscriptionSuccessEmail(
+        user.email,
+        user.fullname || user.email,
+        plan.name,
+        plan.price,
+        session.currency.toUpperCase(),
+        session.payment_status,
+        "Stripe",
+        session.id,
+        expiryDate
+      );
+    } catch (emailError) {
+      console.error("Failed to send email:", emailError);
+      // Don't fail the request if email fails
+    }
+
+    // Prepare response
+    const userResponse = user.toObject();
+    delete userResponse.password; // Remove sensitive data
 
     res.status(200).json({
+      success: true,
       message: "Payment successful",
-      data: { 
-        user: {
-          ...user.toObject(),
-          subscription: user.subscription
+      data: {
+        user: userResponse,
+        payment: {
+          id: payment._id,
+          amount: payment.amount,
+          currency: payment.currency,
+          status: payment.status
         },
+        subscription: subscriptionData,
+        // Include token if needed for frontend
         token: req.headers.authorization?.split(' ')[1] || null
       },
     });
 
   } catch (error) {
-    console.error("Capture error:", error);
+    console.error("Capture error details:", {
+      message: error.message,
+      stack: error.stack,
+      sessionId: req.body?.sessionId
+    });
+
     res.status(500).json({ 
+      success: false,
       message: "Failed to capture payment", 
-      error: error.message 
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
+};
+
+// Optional: Add webhook handler for better reliability
+exports.stripeWebhook = async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error('Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Handle specific events
+  switch (event.type) {
+    case 'checkout.session.completed':
+      const session = event.data.object;
+      console.log('Webhook: Checkout session completed:', session.id);
+      
+      // You can process the payment here in background
+      // This ensures payment is captured even if user closes browser
+      break;
+      
+    case 'payment_intent.succeeded':
+      const paymentIntent = event.data.object;
+      console.log('Webhook: Payment succeeded:', paymentIntent.id);
+      break;
+      
+    default:
+      console.log(`Unhandled event type: ${event.type}`);
+  }
+
+  res.json({ received: true });
 };
