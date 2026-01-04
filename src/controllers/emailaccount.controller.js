@@ -249,6 +249,7 @@ exports.getEmailAccounts = async (req, res) => {
 
 
 // ====== GET MASKED EMAILS ======
+// ====== GET MASKED EMAILS ======
 exports.getMaskedAccounts = async (req, res) => {
   try {
     const { email, limit = 25, page = 1 } = req.query;
@@ -271,13 +272,17 @@ exports.getMaskedAccounts = async (req, res) => {
 
     if (emailParams.some(param => param.includes("@"))) {
       // If any parameter contains "@", treat all as full emails
+      // Use term query for exact matching
       const emailQueries = emailParams.map(emailParam => ({
-        match: { email: emailParam }
+        term: { 
+          email: emailParam.toLowerCase() 
+        }
       }));
       
       body = {
         size: MAX_LIMIT,
         from: from,
+        track_total_hits: true,
         query: {
           bool: {
             should: emailQueries,
@@ -286,20 +291,28 @@ exports.getMaskedAccounts = async (req, res) => {
         }
       };
     } else {
-      // All parameters are domains - search for emails ending with any of these domains
-      const domainQueries = emailParams.map(domain => ({
-        regexp: {
-          email: {
-            value: `.*@${domain}.*`,
-            flags: "ALL",
-            case_insensitive: true
+      // All parameters are domains - search for emails ending with these domains (exact match)
+      const domainQueries = emailParams.map(domain => {
+        // Normalize domain (remove www. if present)
+        const normalizedDomain = domain.toLowerCase().replace(/^www\./, '');
+        
+        // For exact match of domain, we need to match emails ending with @domain.com
+        // We'll use regexp for exact domain match
+        return {
+          regexp: {
+            email: {
+              value: `.*@${normalizedDomain.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+              flags: "ALL",
+              case_insensitive: true
+            }
           }
-        }
-      }));
+        };
+      });
       
       body = {
         size: MAX_LIMIT,
         from: from,
+        track_total_hits: true,
         query: {
           bool: {
             should: domainQueries,
@@ -322,12 +335,83 @@ exports.getMaskedAccounts = async (req, res) => {
       }
     );
 
-    console.log(`Found ${data.hits.hits.length} results`);
+    console.log(`Found ${data.hits.hits.length} results for query: ${email}`);
 
     const hits = data.hits.hits;
     const totalCount = data.hits.total?.value || 0;
 
-    // Apply masking logic
+    // If no results found with regex, try alternative approach with wildcard
+    if (hits.length === 0 && emailParams.length > 0 && !emailParams.some(p => p.includes("@"))) {
+      console.log("No results with regex, trying wildcard approach...");
+      
+      // Try wildcard query as fallback
+      const wildcardQueries = emailParams.map(domain => {
+        const normalizedDomain = domain.toLowerCase().replace(/^www\./, '');
+        return {
+          wildcard: {
+            email: `*@${normalizedDomain}`
+          }
+        };
+      });
+      
+      const wildcardBody = {
+        size: MAX_LIMIT,
+        from: from,
+        track_total_hits: true,
+        query: {
+          bool: {
+            should: wildcardQueries,
+            minimum_should_match: 1
+          }
+        }
+      };
+      
+      console.log("Trying wildcard query:", JSON.stringify(wildcardBody, null, 2));
+      
+      const wildcardResponse = await axios.post(
+        `${OPENSEARCH_URL}/${OPENSEARCH_INDEX}/_search`,
+        wildcardBody,
+        { 
+          auth: AUTH,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      const wildcardHits = wildcardResponse.data.hits.hits;
+      const wildcardTotal = wildcardResponse.data.hits.total?.value || 0;
+      
+      console.log(`Found ${wildcardHits.length} results with wildcard query`);
+      
+      if (wildcardHits.length > 0) {
+        // Use wildcard results
+        const rows = wildcardHits.map(h => h._source);
+        const normalEmails = rows.slice(0, 10);
+        const maskedEmails = rows.slice(10).map(r => ({ 
+          ...r, 
+          email: maskEmail(r.email), 
+          masked: true 
+        }));
+
+        return res.json({
+          success: true,
+          data: [...normalEmails, ...maskedEmails],
+          total: wildcardTotal,
+          returned: rows.length,
+          normalCount: normalEmails.length,
+          maskedCount: maskedEmails.length,
+          page: parseInt(page),
+          totalPages: Math.ceil(wildcardTotal / MAX_LIMIT),
+          limit: MAX_LIMIT,
+          searchedDomains: emailParams,
+          domainCount: emailParams.length,
+          queryType: "wildcard"
+        });
+      }
+    }
+
+    // Apply masking logic to original results
     const rows = hits.map(h => h._source);
     const normalEmails = rows.slice(0, 10);
     const maskedEmails = rows.slice(10).map(r => ({ 
@@ -337,6 +421,7 @@ exports.getMaskedAccounts = async (req, res) => {
     }));
 
     res.json({
+      success: true,
       data: [...normalEmails, ...maskedEmails],
       total: totalCount,
       returned: rows.length,
@@ -346,18 +431,34 @@ exports.getMaskedAccounts = async (req, res) => {
       totalPages: Math.ceil(totalCount / MAX_LIMIT),
       limit: MAX_LIMIT,
       searchedDomains: emailParams,
-      domainCount: emailParams.length
+      domainCount: emailParams.length,
+      queryType: emailParams.some(p => p.includes("@")) ? "exact_email" : "exact_domain"
     });
   } catch (err) {
     console.error("getMaskedAccounts error:", err.response?.data || err.message);
     console.error("Full error:", JSON.stringify(err.response?.data || err, null, 2));
     res.status(500).json({ 
+      success: false,
       message: "Error fetching masked accounts",
-      error: err.response?.data || err.message 
+      error: err.response?.data?.error || err.message 
     });
   }
 };
 
+// Helper function to mask email
+function maskEmail(email) {
+  if (!email || !email.includes('@')) return email;
+  
+  const [localPart, domain] = email.split('@');
+  
+  if (localPart.length <= 2) {
+    return '*'.repeat(localPart.length) + '@' + domain;
+  }
+  
+  // Keep first 2 characters, mask the rest
+  const maskedLocal = localPart.substring(0, 2) + '*'.repeat(localPart.length - 2);
+  return maskedLocal + '@' + domain;
+}
 // ====== GET SINGLE EMAIL ACCOUNT ======
 exports.getEmailAccount = async (req, res) => {
   try {
