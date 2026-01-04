@@ -1,11 +1,8 @@
-const {
-  createPaypalOrder,
-  capturePaypalOrder,
-} = require("../utils/paypalServices");
-
+const Stripe = require('stripe');
 const Payment = require("../models/payment.model");
 const User = require("../models/user.model");
 const Plan = require("../models/plans.model");
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const { sendSubscriptionSuccessEmail } = require("../utils/mailer");
 
 exports.createOrder = async (req, res) => {
@@ -26,60 +23,81 @@ exports.createOrder = async (req, res) => {
   // Check active subscription
   if (
     user.subscription &&
-    user.subscription.plan &&
-    user.subscription.price !== 0 &&
-    (!user.subscription.expiresAt || user.subscription.expiresAt > new Date())
+    user.subscription.length > 0 &&
+    user.subscription[user.subscription.length - 1]?.plan?.price > 0 &&
+    (!user.subscription[user.subscription.length - 1]?.expiresAt || 
+     user.subscription[user.subscription.length - 1]?.expiresAt > new Date())
   ) {
     return res.status(400).json({
-      message:
-        "You already have an active subscription. Please unsubscribe or wait for it to expire before subscribing again.",
+      message: "You already have an active subscription. Please wait for it to expire before subscribing again.",
     });
   }
 
-  const amount = plan.price; // Assuming plan has a price field
-
   try {
-    const orderData = await createPaypalOrder(amount, planId);
-    const approveLink = orderData.links.find((link) => link.rel === "approve");
-
-    if (!approveLink) {
-      return res
-        .status(500)
-        .json({ message: "Approval link not found in PayPal response" });
-    }
+    // Create Stripe Checkout Session
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: {
+              name: plan.name,
+              description: plan.description,
+              metadata: {
+                planId: plan._id.toString(),
+              },
+            },
+            unit_amount: Math.round(plan.price * 100), // Convert dollars to cents
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      success_url: `${process.env.FRONTEND_URL}/emailFinder?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/emailFinder/pricing`,
+      customer_email: user.email,
+      metadata: {
+        userId: req.user.id,
+        planId: plan._id.toString(),
+        userEmail: user.email,
+      },
+    });
 
     res.status(200).json({
-      id: orderData.id,
-      link: approveLink.href,
+      id: session.id,
+      link: session.url,
     });
+
   } catch (error) {
-    console.error("Error creating PayPal order:", error.message);
+    console.error("Error creating Stripe checkout session:", error);
     res.status(500).json({
-      message: "Failed to create PayPal order",
+      message: "Failed to create payment session",
       error: error.message,
     });
   }
 };
 
 exports.captureOrder = async (req, res) => {
-  const { orderId, planId } = req.body;
-  const userId = req.user?.id || req.session?.user?.id;
-  const user = await User.findById(req.user.id);
+  const { sessionId } = req.body;
+  const userId = req.user?.id;
 
-  if (!orderId) {
-    return res.status(400).json({ message: "Order ID is required" });
-  }
-  if (!planId || !userId) {
-    return res.status(400).json({ message: "planId and userId are required" });
+  if (!sessionId) {
+    return res.status(400).json({ message: "Session ID is required" });
   }
 
   try {
-    const captureData = await capturePaypalOrder(orderId);
+    // Retrieve the Stripe session to verify payment
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    // Save payment record
+    if (session.payment_status !== 'paid') {
+      return res.status(400).json({ message: "Payment not completed" });
+    }
 
+    // Get planId from session metadata (more reliable)
+    const planId = session.metadata?.planId;
     if (!planId) {
-      return res.status(400).json({ message: "Invalid plan ID provided" });
+      return res.status(400).json({ message: "Plan ID not found in session" });
     }
 
     const plan = await Plan.findById(planId);
@@ -87,26 +105,29 @@ exports.captureOrder = async (req, res) => {
       return res.status(404).json({ message: "Plan not found" });
     }
 
-    // Fetch the user
-    const user = await User.findById(userId);
-
+    const user = await User.findById(userId || session.metadata?.userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    // Save payment record
     await Payment.create({
-      user: userId,
+      user: user._id,
       useremail: user.email,
       amount: plan.price,
-      currency: captureData.purchase_units?.[0]?.amount?.currency_code || "USD",
-      status: captureData.status?.toLowerCase() || "completed",
-      method: "PayPal",
-      transactionId: captureData.id,
+      currency: session.currency,
+      status: session.payment_status,
+      method: "Stripe",
+      transactionId: session.id,
       plan: planId,
-      details: captureData,
+      details: session,
     });
 
+    // Update subscription
     const now = new Date();
     const expiry = new Date();
-    expiry.setDate(now.getDate() + plan.duration); // Example: 30-day subscription
+    expiry.setDate(now.getDate() + plan.duration);
 
-    // Update subscription
     user.subscription.push({
       plan: {
         id: plan._id.toString(),
@@ -120,8 +141,6 @@ exports.captureOrder = async (req, res) => {
       expiresAt: expiry,
     });
 
-    console.log("Updating user plan to:", plan.name, user.subscription);
-
     user.currentPlan = {
       id: plan._id.toString(),
       name: plan.name,
@@ -133,25 +152,34 @@ exports.captureOrder = async (req, res) => {
 
     await user.save();
 
-    res.status(200).json({
-      message: "Payment successful",
-      data: { captureData, subscription: user.subscription },
-    });
+    // Send email
     await sendSubscriptionSuccessEmail(
       user.email,
       user.fullname || user.email,
       plan.name,
       plan.price,
-
-      captureData.purchase_units?.[0]?.amount?.currency_code || "USD",
-      captureData.status?.toLowerCase() || "completed",
-      "PayPal",
-      captureData.id
+      session.currency,
+      session.payment_status,
+      "Stripe",
+      session.id
     );
+
+    res.status(200).json({
+      message: "Payment successful",
+      data: { 
+        user: {
+          ...user.toObject(),
+          subscription: user.subscription
+        },
+        token: req.headers.authorization?.split(' ')[1] || null
+      },
+    });
+
   } catch (error) {
-    console.error("Capture error:", error.message);
-    res
-      .status(500)
-      .json({ message: "Failed to capture payment", error: error.message });
+    console.error("Capture error:", error);
+    res.status(500).json({ 
+      message: "Failed to capture payment", 
+      error: error.message 
+    });
   }
 };
