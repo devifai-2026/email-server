@@ -213,42 +213,63 @@ exports.getEmailAccounts = async (req, res) => {
     };
 
     /* ---------- EMAIL FILTER ---------- */
-    if (email) {
-      const values = email.split(",").map((v) => v.trim().toLowerCase());
+ /* ---------- EMAIL FILTER ---------- */
+if (email) {
+  const values = email.split(",").map((v) => v.trim().toLowerCase());
 
-      values.forEach((emailValue) => {
-        if (emailValue.includes("@")) {
-          if (emailValue.startsWith("@")) {
-            const domain = emailValue.substring(1);
-            should.push(
-              { wildcard: { email: `*@${domain}` } },
-              { wildcard: { email: `*@*.${domain}` } }
-            );
-          } else if (emailValue.includes(".")) {
-            filter.push({ term: { email: emailValue } });
-          } else {
-            should.push(
-              { wildcard: { email: `*${emailValue}*` } },
-              { match_phrase_prefix: { email: emailValue } }
-            );
-          }
-        } else {
-          if (emailValue.includes(".") && /^[a-zA-Z0-9.-]+$/.test(emailValue)) {
-            should.push(
-              { wildcard: { email: `*@${emailValue}` } },
-              { wildcard: { email: `*@*.${emailValue}` } }
-            );
-          } else {
-            should.push(
-              { wildcard: { email: `*${emailValue}*` } },
-              { match_phrase_prefix: { email: emailValue } }
-            );
-          }
+  values.forEach((emailValue) => {
+    if (emailValue.includes("@")) {
+      if (emailValue.startsWith("@")) {
+        // Search for all emails from this domain (e.g., @gmail.com)
+        const domain = emailValue.substring(1);
+        should.push(
+          { wildcard: { email: `*@${domain}` } },
+          { wildcard: { email: `*@*.${domain}` } }
+        );
+      } else if (emailValue.includes(".")) {
+        // Complete email address - do exact match
+        filter.push({ term: { email: emailValue } });
+      } else {
+        // Partial email with @ but incomplete (e.g., john@)
+        should.push(
+          { wildcard: { email: `*${emailValue}*` } },
+          { match_phrase_prefix: { email: emailValue } }
+        );
+      }
+    } else {
+      // No @ symbol - could be username, partial email, or domain
+      
+      // Check if it looks like a domain (contains dot and valid domain characters)
+      const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+      
+      if (emailValue.includes('.') && domainRegex.test(emailValue)) {
+        // It looks like a domain - search for emails ending with this domain
+        should.push(
+          { wildcard: { email: `*@${emailValue}` } },
+          { wildcard: { email: `*@*.${emailValue}` } }
+        );
+        
+        // Also search for subdomains
+        const parts = emailValue.split('.');
+        if (parts.length > 2) {
+          // For domains like sub.domain.com, also search for *.domain.com
+          const rootDomain = parts.slice(-2).join('.');
+          should.push(
+            { wildcard: { email: `*@*.${rootDomain}` } }
+          );
         }
-      });
-
-      console.log(`Email search for: "${email}" - parsed as:`, values);
+      } else {
+        // Probably a username or partial email - search anywhere in email
+        should.push(
+          { wildcard: { email: `*${emailValue}*` } },
+          { match_phrase_prefix: { email: emailValue } }
+        );
+      }
     }
+  });
+
+  console.log(`Email search for: "${email}" - parsed as:`, values);
+}
 
     /* ---------- WEBSITE FILTER ---------- */
     if (website) {
