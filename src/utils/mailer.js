@@ -168,6 +168,9 @@ exports.sendSubscriptionSuccessEmail = async (
   const subject = "✨ Subscription Activated | Your Reach Finder Premium Access";
   const text = `Hi ${fullname}, your subscription to the ${packageName} plan has been successfully activated. Enjoy all the premium features of Reach Finder.`;
 
+  // Add your ImageBB logo URL here
+  const LOGO_URL = "https://i.ibb.co/Vcx4s1VH/logo.png"; // Replace with your actual ImageBB URL
+
   const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -178,28 +181,54 @@ exports.sendSubscriptionSuccessEmail = async (
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        @media only screen and (max-width: 640px) {
+            .container {
+                padding: 10px !important;
+                margin: 20px auto !important;
+            }
+            .grid-2 {
+                grid-template-columns: 1fr !important;
+            }
+            .logo-container {
+                padding: 8px 16px !important;
+            }
+            .cta-button {
+                padding: 14px 30px !important;
+                font-size: 15px !important;
+            }
+        }
+    </style>
 </head>
 <body style="margin: 0; padding: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
 
   <!-- Email Container -->
-  <div style="max-width: 640px; margin: 40px auto; padding: 20px;">
+  <div class="container" style="max-width: 640px; margin: 40px auto; padding: 20px;">
     
     <!-- Premium Card -->
     <div style="background: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);">
       
       <!-- Gradient Header -->
-      <div style="background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); padding: 48px 40px 32px; text-align: center; position: relative;">
+      <div style="background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); padding: 40px 40px 32px; text-align: center; position: relative;">
         
         <!-- Decorative Elements -->
         <div style="position: absolute; top: 20px; right: 30px; width: 40px; height: 40px; background: rgba(255,255,255,0.1); border-radius: 50%;"></div>
         <div style="position: absolute; bottom: 40px; left: 30px; width: 24px; height: 24px; background: rgba(255,255,255,0.1); border-radius: 50%;"></div>
         
-        <!-- Logo/Brand -->
-        <div style="margin-bottom: 24px;">
-          <div style="display: inline-block; background: white; padding: 12px 24px; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.1);">
-            <h1 style="margin: 0; color: #2563eb; font-size: 28px; font-weight: 700; letter-spacing: -0.5px;">
-              Reach Finder
-            </h1>
+        <!-- Logo Section -->
+        <div class="logo-container" style="margin-bottom: 32px;">
+          <div style="display: inline-block; background: white; padding: 16px 28px; border-radius: 20px; box-shadow: 0 12px 32px rgba(0,0,0,0.15);">
+            <!-- Logo Image from ImageBB -->
+            <img src="${LOGO_URL}" 
+                 alt="Reach Finder Logo" 
+                 style="max-width: 180px; height: auto; display: block; margin: 0 auto;"
+                 width="180"
+                 height="auto">
+            <div style="margin-top: 8px;">
+              <h1 style="margin: 0; color: #2563eb; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">
+                Reach Finder
+              </h1>
+            </div>
           </div>
         </div>
         
@@ -245,7 +274,7 @@ exports.sendSubscriptionSuccessEmail = async (
             Invoice Summary
           </h3>
           
-          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
+          <div class="grid-2" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
             <div>
               <p style="margin: 0 0 4px; color: #6b7280; font-size: 13px; font-weight: 500; text-transform: uppercase;">
                 Invoice Date
@@ -330,7 +359,7 @@ exports.sendSubscriptionSuccessEmail = async (
               <h5 style="margin: 0 0 12px; color: #4b5563; font-size: 14px; font-weight: 600; text-transform: uppercase;">
                 Included Features:
               </h5>
-              <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+              <div class="grid-2" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
                 <div style="display: flex; align-items: center; gap: 8px;">
                   <span style="color: #10b981;">✓</span>
                   <span style="color: #374151; font-size: 14px;">Unlimited Searches</span>
@@ -368,9 +397,8 @@ exports.sendSubscriptionSuccessEmail = async (
         <!-- CTA Button -->
         <div style="text-align: center; margin-bottom: 32px;">
           <a href="${process.env.CLIENT_URL || '#'}" 
-            style="display: inline-block; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; text-decoration: none; padding: 18px 40px; border-radius: 12px; font-weight: 700; font-size: 16px; box-shadow: 0 8px 24px rgba(16, 185, 129, 0.3); transition: all 0.3s ease;"
-            onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 12px 28px rgba(16, 185, 129, 0.4)';"
-            onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 8px 24px rgba(16, 185, 129, 0.3)';">
+            class="cta-button"
+            style="display: inline-block; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; text-decoration: none; padding: 18px 40px; border-radius: 12px; font-weight: 700; font-size: 16px; box-shadow: 0 8px 24px rgba(16, 185, 129, 0.3); transition: all 0.3s ease;">
             🚀 Access Your Dashboard
           </a>
           <p style="margin: 16px 0 0; color: #6b7280; font-size: 14px;">
@@ -380,6 +408,13 @@ exports.sendSubscriptionSuccessEmail = async (
 
         <!-- Footer -->
         <div style="border-top: 1px solid #e5e7eb; padding-top: 32px; text-align: center;">
+          <div style="margin-bottom: 20px;">
+            <img src="${LOGO_URL}" 
+                 alt="Reach Finder Logo" 
+                 style="max-width: 120px; height: auto; opacity: 0.8;"
+                 width="120"
+                 height="auto">
+          </div>
           <p style="margin: 0 0 16px; color: #4b5563; font-size: 14px;">
             Need help? <a href="mailto:support@reachfinder.com" style="color: #2563eb; text-decoration: none; font-weight: 600;">Contact Support</a>
           </p>
