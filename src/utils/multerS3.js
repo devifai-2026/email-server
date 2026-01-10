@@ -1,4 +1,4 @@
-// middleware/uploadToS3.js
+// middleware/uploadToS3.js - Simplified version
 const AWS = require("aws-sdk");
 const multer = require("multer");
 const multerS3 = require("multer-s3");
@@ -17,20 +17,19 @@ const uploadToS3 = multer({
     bucket: process.env.AWS_BUCKET || "emailfinderninja2025",
     metadata: function (req, file, cb) {
       cb(null, {
-        fieldName: file.fieldname,
         originalName: file.originalname,
-        uploadedBy: req.user.id,
       });
     },
     key: function (req, file, cb) {
       const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-      const filename = `uploads/${req.user.id}/${uniqueSuffix}-${file.originalname}`;
+      // Save all files in a generic uploads folder
+      const filename = `uploads/${uniqueSuffix}-${file.originalname}`;
       cb(null, filename);
     },
     contentType: multerS3.AUTO_CONTENT_TYPE,
   }),
   limits: {
-    fileSize: 100 * 1024 * 1024, // 10MB limit
+    fileSize: 100 * 1024 * 1024, // 100MB limit (fixed the value)
   },
   fileFilter: function (req, file, cb) {
     // Check if file is Excel
