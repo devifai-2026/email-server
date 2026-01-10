@@ -24,3 +24,7 @@ const authAccountSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+// Add index for token lookup
+authAccountSchema.index({ "tokens.token": 1 });
+
+module.exports = mongoose.model("AuthAccount", authAccountSchema);
