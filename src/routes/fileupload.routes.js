@@ -11,7 +11,8 @@ router.get("/getStatus/:id", protect, adminOnly, getUploadStatus);
 
 router.post(
   "/uploadfile",
-  uploadToS3.single("file")
+  uploadToS3.single("file"),  // This uploads to S3
+  uploadExcel  // This processes the upload
 );
 
 module.exports = router;
