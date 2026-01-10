@@ -402,7 +402,7 @@ exports.getEmailAccounts = async (req, res) => {
           user.role === "user"
             ? user.subscription[user.subscription.length - 1]
             : null,
-        isPro: user.subscription[user.subscription.length - 1].plan.price > 0,
+        isPro: user.subscription[user.subscription.length - 1]?.plan?.price > 0 || false,
       },
     });
   } catch (err) {
