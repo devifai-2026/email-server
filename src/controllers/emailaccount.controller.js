@@ -135,36 +135,38 @@ exports.getEmailAccounts = async (req, res) => {
     }
 
     // Check if user role is 'user' and subscription is expired
-if (user.role === "user") {
-  if (user.subscription && user.subscription.length > 0) {
-    // Find the most recent subscription
-    let currentSubscription = user.subscription[0];
-    
-    for (let i = 1; i < user.subscription.length; i++) {
-      const currentDate = new Date(user.subscription[i].subscribedAt);
-      const latestDate = new Date(currentSubscription.subscribedAt);
-      if (currentDate > latestDate) {
-        currentSubscription = user.subscription[i];
+    if (user.role === "user") {
+      if (user.subscription && user.subscription.length > 0) {
+        // Find the most recent subscription
+        let currentSubscription = user.subscription[0];
+
+        for (let i = 1; i < user.subscription.length; i++) {
+          const currentDate = new Date(user.subscription[i].subscribedAt);
+          const latestDate = new Date(currentSubscription.subscribedAt);
+          if (currentDate > latestDate) {
+            currentSubscription = user.subscription[i];
+          }
+        }
+
+        // Check if subscription is expired
+        const today = new Date();
+        const expiresAt = new Date(currentSubscription.expiresAt);
+
+        if (expiresAt < today) {
+          return res.status(403).json({
+            success: false,
+            error:
+              "Your subscription has expired. Please renew to continue using the service.",
+          });
+        }
+      } else {
+        return res.status(403).json({
+          success: false,
+          error:
+            "No active subscription found. Please subscribe to use this service.",
+        });
       }
     }
-
-    // Check if subscription is expired
-    const today = new Date();
-    const expiresAt = new Date(currentSubscription.expiresAt);
-
-    if (expiresAt < today) {
-      return res.status(403).json({
-        success: false,
-        error: "Your subscription has expired. Please renew to continue using the service.",
-      });
-    }
-  } else {
-    return res.status(403).json({
-      success: false,
-      error: "No active subscription found. Please subscribe to use this service.",
-    });
-  }
-}
     // If user passes validation, proceed with the original query logic
     const {
       email,
@@ -210,62 +212,62 @@ if (user.role === "user") {
     };
 
     /* ---------- EMAIL FILTER ---------- */
- /* ---------- EMAIL FILTER ---------- */
-if (email) {
-  const values = email.split(",").map((v) => v.trim().toLowerCase());
+    /* ---------- EMAIL FILTER ---------- */
+    if (email) {
+      const values = email.split(",").map((v) => v.trim().toLowerCase());
 
-  values.forEach((emailValue) => {
-    if (emailValue.includes("@")) {
-      // This is an email search - search in email field
-      if (emailValue.startsWith("@")) {
-        const domain = emailValue.substring(1);
-        should.push(
-          { wildcard: { email: `*@${domain}` } },
-          { wildcard: { email: `*@*.${domain}` } }
-        );
-      } else if (emailValue.includes(".")) {
-        filter.push({ term: { email: emailValue } });
-      } else {
-        should.push(
-          { wildcard: { email: `*${emailValue}*` } },
-          { match_phrase_prefix: { email: emailValue } }
-        );
-      }
-    } else {
-      // Check if it looks like a domain (for website search)
-      const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-      
-      if (emailValue.includes('.') && domainRegex.test(emailValue)) {
-        // It looks like a domain - search in website field
-        const normalizedDomain = normalizeWebsite(emailValue);
-        
-        // Search in website and website_normalized fields
-        should.push(
-          { term: { website_normalized: normalizedDomain } },
-          { term: { website: normalizedDomain } },
-          { term: { website: `www.${normalizedDomain}` } }
-        );
-        
-        // Also handle subdomains
-        if (emailValue.startsWith('www.')) {
-          const withoutWWW = emailValue.replace(/^www\./, '');
-          should.push(
-            { term: { website: withoutWWW } },
-            { term: { website_normalized: withoutWWW } }
-          );
+      values.forEach((emailValue) => {
+        if (emailValue.includes("@")) {
+          // This is an email search - search in email field
+          if (emailValue.startsWith("@")) {
+            const domain = emailValue.substring(1);
+            should.push(
+              { wildcard: { email: `*@${domain}` } },
+              { wildcard: { email: `*@*.${domain}` } }
+            );
+          } else if (emailValue.includes(".")) {
+            filter.push({ term: { email: emailValue } });
+          } else {
+            should.push(
+              { wildcard: { email: `*${emailValue}*` } },
+              { match_phrase_prefix: { email: emailValue } }
+            );
+          }
+        } else {
+          // Check if it looks like a domain (for website search)
+          const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+          if (emailValue.includes(".") && domainRegex.test(emailValue)) {
+            // It looks like a domain - search in website field
+            const normalizedDomain = normalizeWebsite(emailValue);
+
+            // Search in website and website_normalized fields
+            should.push(
+              { term: { website_normalized: normalizedDomain } },
+              { term: { website: normalizedDomain } },
+              { term: { website: `www.${normalizedDomain}` } }
+            );
+
+            // Also handle subdomains
+            if (emailValue.startsWith("www.")) {
+              const withoutWWW = emailValue.replace(/^www\./, "");
+              should.push(
+                { term: { website: withoutWWW } },
+                { term: { website_normalized: withoutWWW } }
+              );
+            }
+          } else {
+            // Probably a username or partial email - search in email field
+            should.push(
+              { wildcard: { email: `*${emailValue}*` } },
+              { match_phrase_prefix: { email: emailValue } }
+            );
+          }
         }
-      } else {
-        // Probably a username or partial email - search in email field
-        should.push(
-          { wildcard: { email: `*${emailValue}*` } },
-          { match_phrase_prefix: { email: emailValue } }
-        );
-      }
-    }
-  });
+      });
 
-  console.log(`Search for: "${email}" - parsed as:`, values);
-}
+      console.log(`Search for: "${email}" - parsed as:`, values);
+    }
 
     /* ---------- WEBSITE FILTER ---------- */
     if (website) {
@@ -400,6 +402,7 @@ if (email) {
           user.role === "user"
             ? user.subscription[user.subscription.length - 1]
             : null,
+        isPro: user.subscription[user.subscription.length - 1].price > 0,
       },
     });
   } catch (err) {
@@ -452,7 +455,9 @@ exports.getMaskedAccounts = async (req, res) => {
     // Helper function to check if it's likely a domain
     const isLikelyDomain = (param) => {
       const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-      return param.includes('.') && domainRegex.test(param) && !param.includes('@');
+      return (
+        param.includes(".") && domainRegex.test(param) && !param.includes("@")
+      );
     };
 
     // Helper function to normalize website
@@ -468,8 +473,8 @@ exports.getMaskedAccounts = async (req, res) => {
     };
 
     // Check what type of search we're doing
-    const allAreDomains = emailParams.every(param => isLikelyDomain(param));
-    const anyHasAtSymbol = emailParams.some(param => param.includes("@"));
+    const allAreDomains = emailParams.every((param) => isLikelyDomain(param));
+    const anyHasAtSymbol = emailParams.some((param) => param.includes("@"));
 
     if (anyHasAtSymbol) {
       // If any parameter contains "@", treat all as email searches
@@ -506,12 +511,12 @@ exports.getMaskedAccounts = async (req, res) => {
       // All parameters are domains - search in website field
       const websiteQueries = emailParams.flatMap((domain) => {
         const normalizedDomain = normalizeWebsite(domain);
-        
+
         // Create queries for website and website_normalized fields
         return [
           { term: { website_normalized: normalizedDomain } },
           { term: { website: normalizedDomain } },
-          { term: { website: `www.${normalizedDomain}` } }
+          { term: { website: `www.${normalizedDomain}` } },
         ];
       });
 
@@ -530,28 +535,28 @@ exports.getMaskedAccounts = async (req, res) => {
       // Mixed or unclear - search in both email and website fields
       const mixedQueries = emailParams.flatMap((param) => {
         const queries = [];
-        
+
         // Search in email field
         queries.push({
           wildcard: {
             email: `*${param.toLowerCase()}*`,
           },
         });
-        
+
         // Search in website field
         queries.push({
           wildcard: {
             website: `*${param.toLowerCase()}*`,
           },
         });
-        
+
         // Search in website_normalized field
         queries.push({
           wildcard: {
             website_normalized: `*${param.toLowerCase()}*`,
           },
         });
-        
+
         return queries;
       });
 
@@ -588,7 +593,9 @@ exports.getMaskedAccounts = async (req, res) => {
 
     // If no results found and we searched by website, try alternative approach
     if (hits.length === 0 && allAreDomains) {
-      console.log("No results with website search, trying domain in email as fallback...");
+      console.log(
+        "No results with website search, trying domain in email as fallback..."
+      );
 
       // Try searching for emails ending with these domains as fallback
       const fallbackQueries = emailParams.flatMap((domain) => {
@@ -603,7 +610,7 @@ exports.getMaskedAccounts = async (req, res) => {
             wildcard: {
               email: `*@*.${normalizedDomain}`,
             },
-          }
+          },
         ];
       });
 
@@ -692,7 +699,7 @@ exports.getMaskedAccounts = async (req, res) => {
       limit: MAX_LIMIT,
       searchedDomains: emailParams,
       domainCount: emailParams.length,
-      queryType: anyHasAtSymbol ? "email" : (allAreDomains ? "website" : "mixed"),
+      queryType: anyHasAtSymbol ? "email" : allAreDomains ? "website" : "mixed",
     });
   } catch (err) {
     console.error(
@@ -751,12 +758,10 @@ exports.getEmailAccount = async (req, res) => {
     if (data.hits.hits.length === 0)
       return res.status(404).json({ message: "Record not found" });
 
-    res
-      .status(200)
-      .json({
-        account: data.hits.hits[0]._source,
-        message: "Email account fetched successfully",
-      });
+    res.status(200).json({
+      account: data.hits.hits[0]._source,
+      message: "Email account fetched successfully",
+    });
   } catch (err) {
     console.error("getEmailAccount error:", err.response?.data || err.message);
     res.status(500).json({ message: "Error fetching record" });
@@ -840,12 +845,10 @@ exports.updateEmailAccount = async (req, res) => {
       { auth: AUTH }
     );
 
-    res
-      .status(200)
-      .json({
-        account: updatedData,
-        message: "Email account updated successfully",
-      });
+    res.status(200).json({
+      account: updatedData,
+      message: "Email account updated successfully",
+    });
   } catch (err) {
     if (err.response?.status === 404) {
       return res.status(404).json({ message: "Record not found" });
