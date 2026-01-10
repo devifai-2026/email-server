@@ -339,37 +339,21 @@ exports.signin = async (req, res) => {
 exports.logout = async (req, res) => {
   try {
     // Get token from header or session
-    const token = req.headers.authorization?.replace("Bearer ", "") || req.session?.token;
-    
-    if (!token) {
-      // If no token, just destroy session and respond
-      if (req.session) {
-        req.session.destroy(() => {});
-      }
-      return res.json({ message: "Logged out successfully (no active session)" });
-    }
+    const token =
+      req.headers.authorization?.replace("Bearer ", "") || req.session?.token;
+    const userId = req.session?.user?.id || req.user?.id;
 
-    // Find user by token in the tokens array
-    const user = await AuthAccount.findOne({ "tokens.token": token });
-
-    if (!user) {
-      // User not found by token, just destroy session
-      if (req.session) {
-        req.session.destroy(() => {});
-      }
-      return res.json({ message: "Logged out successfully (session already invalid)" });
+    if (!token || !userId) {
+      return res.status(401).json({ message: "Not authenticated" });
     }
 
     // Remove the current token from tokens array
-    const initialTokenCount = user.tokens.length;
-    user.tokens = user.tokens.filter((t) => t.token !== token);
-    
-    // Update signed in status if no tokens left
-    if (user.tokens.length === 0) {
-      user.isSignedIn = false;
-      user.lastSignedOut = new Date();
+    const user = await AuthAccount.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
     }
-    
+    user.tokens = user.tokens.filter((t) => t.token !== token);
     await user.save();
 
     // Destroy session
@@ -377,24 +361,9 @@ exports.logout = async (req, res) => {
       req.session.destroy(() => {});
     }
 
-    res.json({ 
-      message: "Logged out successfully",
-      tokensRemoved: initialTokenCount - user.tokens.length,
-      remainingSessions: user.tokens.length,
-      isSignedIn: user.isSignedIn
-    });
+    res.json({ message: "Logged out successfully" });
   } catch (err) {
     console.error("Logout error:", err.message);
-    
-    // Try to destroy session even if there's an error
-    try {
-      if (req.session) {
-        req.session.destroy(() => {});
-      }
-    } catch (sessionErr) {
-      console.error("Session destruction error:", sessionErr.message);
-    }
-    
     res.status(500).json({ message: "Error logging out" });
   }
 };
