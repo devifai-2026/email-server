@@ -135,39 +135,36 @@ exports.getEmailAccounts = async (req, res) => {
     }
 
     // Check if user role is 'user' and subscription is expired
-    if (user.role === "user") {
-      // Find the current or most recent subscription
-      let currentSubscription;
-
-      if (user.subscription && user.subscription.length > 0) {
-        // Sort subscriptions by date to get the most recent one
-        const sortedSubscriptions = user.subscription.sort(
-          (a, b) => new Date(b.subscribedAt) - new Date(a.subscribedAt)
-        );
-
-        currentSubscription = user.subscription[user.subscription.length-1];
-
-        // Check if subscription is expired
-        const today = new Date();
-        const expiresAt = new Date(currentSubscription.expiresAt);
-
-        if (expiresAt < today) {
-          return res.status(403).json({
-            success: false,
-            error:
-              "Your subscription has expired. Please renew to continue using the service.",
-          });
-        }
-      } else {
-        // No subscription found
-        return res.status(403).json({
-          success: false,
-          error:
-            "No active subscription found. Please subscribe to use this service.",
-        });
+if (user.role === "user") {
+  if (user.subscription && user.subscription.length > 0) {
+    // Find the most recent subscription
+    let currentSubscription = user.subscription[0];
+    
+    for (let i = 1; i < user.subscription.length; i++) {
+      const currentDate = new Date(user.subscription[i].subscribedAt);
+      const latestDate = new Date(currentSubscription.subscribedAt);
+      if (currentDate > latestDate) {
+        currentSubscription = user.subscription[i];
       }
     }
 
+    // Check if subscription is expired
+    const today = new Date();
+    const expiresAt = new Date(currentSubscription.expiresAt);
+
+    if (expiresAt < today) {
+      return res.status(403).json({
+        success: false,
+        error: "Your subscription has expired. Please renew to continue using the service.",
+      });
+    }
+  } else {
+    return res.status(403).json({
+      success: false,
+      error: "No active subscription found. Please subscribe to use this service.",
+    });
+  }
+}
     // If user passes validation, proceed with the original query logic
     const {
       email,
