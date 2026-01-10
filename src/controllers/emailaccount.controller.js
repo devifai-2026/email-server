@@ -145,7 +145,7 @@ exports.getEmailAccounts = async (req, res) => {
           (a, b) => new Date(b.subscribedAt) - new Date(a.subscribedAt)
         );
 
-        currentSubscription = sortedSubscriptions[0];
+        currentSubscription = user.subscription[user.subscription.length-1];
 
         // Check if subscription is expired
         const today = new Date();
