@@ -226,8 +226,18 @@ exports.signin = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
+    // Check if user is already signed in (optional: you can make this configurable)
+    const shouldLogoutAllDevices = user.isSignedIn; // You can also make this a policy setting
+
+    // If user is already signed in, invalidate all existing tokens
+    if (shouldLogoutAllDevices) {
+      user.tokens = []; // Clear all existing tokens
+      user.lastSignedOut = new Date();
+      await user.save();
+    }
+
     // Generate new token
-    const userData = await User.findById(user._id).lean(); // Use .lean() to get plain JavaScript object
+    const userData = await User.findById(user.userId).lean();
 
     if (!userData.isActive) {
       return res
@@ -264,17 +274,39 @@ exports.signin = async (req, res) => {
       userData.uploadData = bulkUpload;
     }
     
-    const token = generateToken({ id: user._id, role: user.role });
+    // Generate token with additional device info
+    const token = generateToken({ 
+      id: user.userId, 
+      role: userData.role,
+      sessionId: new mongoose.Types.ObjectId().toString() // Unique session ID
+    });
 
-    // Save token to DB (optional, if you want to track sessions)
-    user.tokens.push({ token });
+    // Get device information
+    const deviceInfo = {
+      userAgent: req.headers['user-agent'] || 'Unknown',
+      ipAddress: req.ip || req.connection.remoteAddress,
+      lastActive: new Date()
+    };
+
+    // Save token to DB with device info
+    user.tokens.push({ 
+      token, 
+      deviceInfo,
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days from now
+    });
+    
+    // Update signed in status
+    user.isSignedIn = true;
+    user.lastSignedIn = new Date();
+    
     await user.save();
 
     // Create session
     req.session.user = {
-      id: user._id,
+      id: user.userId,
       email: user.email,
-      role: user.role,
+      role: userData.role,
+      sessionId: token.sessionId
     };
 
     // Add subscription status to the response
@@ -282,13 +314,22 @@ exports.signin = async (req, res) => {
       ...userData,
       subscriptionStatus,
       isSubscriptionExpired,
-      currentSubscription
+      currentSubscription,
+      isSignedIn: true,
+      lastSignedIn: user.lastSignedIn,
+      deviceInfo: {
+        currentDevice: deviceInfo,
+        totalActiveSessions: user.tokens.length
+      }
     };
 
     res.json({
-      message: "Signed in successfully",
+      message: shouldLogoutAllDevices 
+        ? "Signed in successfully. All other devices have been logged out." 
+        : "Signed in successfully",
       token,
       user: userResponse,
+      logoutAllDevices: shouldLogoutAllDevices
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -298,21 +339,37 @@ exports.signin = async (req, res) => {
 exports.logout = async (req, res) => {
   try {
     // Get token from header or session
-    const token =
-      req.headers.authorization?.replace("Bearer ", "") || req.session?.token;
-    const userId = req.session?.user?.id || req.user?.id;
+    const token = req.headers.authorization?.replace("Bearer ", "") || req.session?.token;
+    
+    if (!token) {
+      // If no token, just destroy session and respond
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
+      return res.json({ message: "Logged out successfully (no active session)" });
+    }
 
-    if (!token || !userId) {
-      return res.status(401).json({ message: "Not authenticated" });
+    // Find user by token in the tokens array
+    const user = await AuthAccount.findOne({ "tokens.token": token });
+
+    if (!user) {
+      // User not found by token, just destroy session
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
+      return res.json({ message: "Logged out successfully (session already invalid)" });
     }
 
     // Remove the current token from tokens array
-    const user = await AuthAccount.findById(userId);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    const initialTokenCount = user.tokens.length;
     user.tokens = user.tokens.filter((t) => t.token !== token);
+    
+    // Update signed in status if no tokens left
+    if (user.tokens.length === 0) {
+      user.isSignedIn = false;
+      user.lastSignedOut = new Date();
+    }
+    
     await user.save();
 
     // Destroy session
@@ -320,9 +377,24 @@ exports.logout = async (req, res) => {
       req.session.destroy(() => {});
     }
 
-    res.json({ message: "Logged out successfully" });
+    res.json({ 
+      message: "Logged out successfully",
+      tokensRemoved: initialTokenCount - user.tokens.length,
+      remainingSessions: user.tokens.length,
+      isSignedIn: user.isSignedIn
+    });
   } catch (err) {
     console.error("Logout error:", err.message);
+    
+    // Try to destroy session even if there's an error
+    try {
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
+    } catch (sessionErr) {
+      console.error("Session destruction error:", sessionErr.message);
+    }
+    
     res.status(500).json({ message: "Error logging out" });
   }
 };
@@ -404,4 +476,29 @@ const verifyOtp = async (email, otp) => {
   }
 
   return otpRecord;
+};
+exports.logoutAllDevices = async (req, res) => {
+  try {
+    const userId = req.user.id; // Assuming you have authentication middleware
+    
+    const user = await AuthAccount.findOne({ userId });
+    
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Clear all tokens
+    user.tokens = [];
+    user.isSignedIn = false;
+    user.lastSignedOut = new Date();
+    
+    await user.save();
+    
+    res.json({ 
+      message: "Logged out from all devices successfully",
+      logoutCount: user.tokens.length
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 };
