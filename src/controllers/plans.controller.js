@@ -46,7 +46,26 @@ exports.updatePlan = async (req, res) => {
     res.status(500).json({ message: "Error updating plan" });
   }
 };
-
+exports.getPlanById = async (req, res) => {
+  try {
+    const plan = await Plan.findById(req.params.id);
+    
+    if (!plan) {
+      return res.status(404).json({ message: "Plan not found" });
+    }
+    
+    res.json(plan);
+  } catch (err) {
+    console.error("Error fetching plan:", err.message);
+    
+    // Handle invalid ObjectId format
+    if (err.kind === 'ObjectId') {
+      return res.status(400).json({ message: "Invalid plan ID format" });
+    }
+    
+    res.status(500).json({ message: "Error fetching plan" });
+  }
+};
 // ADMIN: Delete plan
 exports.deletePlan = async (req, res) => {
   try {

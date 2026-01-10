@@ -5,6 +5,7 @@ const {
   createPlan,
   updatePlan,
   deletePlan,
+  getPlanById,
 } = require("../controllers/plans.controller");
 
 const router = express.Router();
@@ -15,7 +16,8 @@ router.get("/", getPlans);
 // ADMIN: write operations
 // Only admin can create, update, or delete plans
 router.post("/", protect, adminOnly, createPlan);
-router.put("/:id", protect, adminOnly, updatePlan);
+router.put("/:id",  updatePlan);
+router.get("/:id",  getPlanById);
 router.delete("/:id", protect, adminOnly, deletePlan);
 
 module.exports = router;
