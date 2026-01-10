@@ -98,7 +98,7 @@ const checkSubscription = (req, res, next) => {
 // ====== GET EMAIL ACCOUNTS WITH FILTERS, PAGINATION ======
 exports.getEmailAccounts = async (req, res) => {
   try {
-    // Extract token from request (assuming it's in Authorization header)
+    // Extract token from request
     const token = req.headers.authorization?.replace("Bearer ", "");
 
     if (!token) {
@@ -111,13 +111,9 @@ exports.getEmailAccounts = async (req, res) => {
     // Verify token and get user information
     let user;
     try {
-      // Assuming you have a function to verify JWT tokens
-      // This depends on your authentication setup
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
       console.log({ decoded });
 
-      // Fetch user from database using the decoded token data
       user = await User.findById(decoded.id).lean();
 
       if (!user) {
@@ -167,6 +163,7 @@ exports.getEmailAccounts = async (req, res) => {
         });
       }
     }
+    
     // If user passes validation, proceed with the original query logic
     const {
       email,
@@ -182,9 +179,35 @@ exports.getEmailAccounts = async (req, res) => {
       order = "asc",
     } = req.query;
 
+    // FIX: Map text fields to sortable fields
+    // Since we can't use .keyword fields, we'll use alternative fields or disable sorting
+    const getSortableField = (requestedField) => {
+      // Define which fields are actually sortable in your current index
+      const sortableFields = {
+        email: "email",           // email is keyword type
+        updated_at: "updated_at", // date field
+        _id: "_id",               // always sortable
+      };
+      
+      // Text fields that CANNOT be sorted in current index
+      const unsortableTextFields = ["name", "companyname", "role", "website"];
+      
+      // If requested field is unsortable, fallback to a sortable field
+      if (unsortableTextFields.includes(requestedField)) {
+        console.warn(`Cannot sort by text field '${requestedField}', falling back to 'email'`);
+        return "email"; // Fallback to email which is sortable
+      }
+      
+      // Return the field if it's sortable, otherwise fallback to email
+      return sortableFields[requestedField] || "email";
+    };
+
     // Determine which sorting parameters to use
-    const sortField = sort_field || sort || "email";
+    let sortField = sort_field || sort || "email";
     const sortDirection = sort_order || order || "asc";
+    
+    // FIX: Convert to a sortable field
+    sortField = getSortableField(sortField);
 
     const size = Math.min(parseInt(limit) || 100, 500);
 
@@ -211,7 +234,6 @@ exports.getEmailAccounts = async (req, res) => {
         .replace(/^www\./, "");
     };
 
-    /* ---------- EMAIL FILTER ---------- */
     /* ---------- EMAIL FILTER ---------- */
     if (email) {
       const values = email.split(",").map((v) => v.trim().toLowerCase());
@@ -385,6 +407,7 @@ exports.getEmailAccounts = async (req, res) => {
     }
 
     console.log(`Found ${hits.length} results for email search: "${email}"`);
+    console.log(`Sorting by: ${sortField} in ${sortDirection} order`);
 
     res.json({
       success: true,
@@ -404,9 +427,31 @@ exports.getEmailAccounts = async (req, res) => {
             : null,
         isPro: user.subscription[user.subscription.length - 1]?.plan?.price > 0 || false,
       },
+      // Return info about sorting for debugging
+      sort_info: {
+        requested: sort_field || sort || "email",
+        actual: sortField,
+        direction: sortDirection
+      }
     });
   } catch (err) {
     console.error("Search error:", err.response?.data || err.message);
+
+    // Handle sorting errors
+    if (
+      err.response?.data?.error?.type === "illegal_argument_exception" &&
+      err.response.data.error.reason.includes("Text fields are not optimised")
+    ) {
+      console.error("Sorting error:", err.response.data.error.reason);
+      
+      // Return a specific error with suggestion
+      return res.status(400).json({
+        success: false,
+        error: `Cannot sort by '${req.query.sort_field || req.query.sort || 'name'}'.`,
+        suggestion: "Sorting is only available for email field. Please use sort_field=email",
+        available_sort_fields: ["email", "updated_at", "_id"]
+      });
+    }
 
     if (
       err.response?.data?.error?.type === "illegal_argument_exception" &&
@@ -425,7 +470,6 @@ exports.getEmailAccounts = async (req, res) => {
     });
   }
 };
-
 // ====== GET MASKED EMAILS ======
 // ====== GET MASKED EMAILS ======
 exports.getMaskedAccounts = async (req, res) => {
