@@ -7,6 +7,7 @@ const generateToken = require("../utils/generateToken");
 const { roles } = require("../utils/config");
 const Otp = require("../models/otp.model");
 const { sendOTP } = require("../utils/mailer");
+const mongoose = require('mongoose')
 
 // Sign up (user only)
 exports.signup = async (req, res) => {
