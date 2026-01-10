@@ -11,8 +11,6 @@ router.get("/getStatus/:id", protect, adminOnly, getUploadStatus);
 
 router.post(
   "/uploadfile",
-  protect,
-  adminOnly,
   uploadToS3.single("file"), 
   uploadExcel
 );
