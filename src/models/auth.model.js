@@ -1,5 +1,3 @@
-const mongoose = require("mongoose");
-
 const authAccountSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, unique: true },
@@ -18,13 +16,9 @@ const authAccountSchema = new mongoose.Schema(
       }
     ],
     isSignedIn: { type: Boolean, default: false },
+    isActive: { type: Boolean, default: true }, // Add this field
     lastSignedIn: { type: Date },
     lastSignedOut: { type: Date }
   },
   { timestamps: true }
 );
-
-// Add index for token lookup
-authAccountSchema.index({ "tokens.token": 1 });
-
-module.exports = mongoose.model("AuthAccount", authAccountSchema);

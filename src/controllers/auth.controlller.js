@@ -212,6 +212,7 @@ exports.createAdminAccount = async (req, res) => {
 };
 
 // Sign in
+
 exports.signin = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -226,23 +227,31 @@ exports.signin = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    // Check if user is already signed in (optional: you can make this configurable)
-    const shouldLogoutAllDevices = user.isSignedIn; // You can also make this a policy setting
+    // Generate new token - Get user data FIRST
+    const userData = await User.findById(user.userId).lean();
+
+    // FIX: Check if userData exists BEFORE using it
+    if (!userData) {
+      return res.status(404).json({ 
+        message: "User profile not found. Please contact support." 
+      });
+    }
+
+    // FIX: Check isActive property safely
+    if (userData.isActive === false) {
+      return res.status(403).json({ 
+        message: "Account is deactivated. Please contact support." 
+      });
+    }
+
+    // Check if user is already signed in
+    const shouldLogoutAllDevices = user.isSignedIn;
 
     // If user is already signed in, invalidate all existing tokens
     if (shouldLogoutAllDevices) {
-      user.tokens = []; // Clear all existing tokens
+      user.tokens = [];
       user.lastSignedOut = new Date();
       await user.save();
-    }
-
-    // Generate new token
-    const userData = await User.findById(user.userId).lean();
-
-    if (!userData.isActive) {
-      return res
-        .status(403)
-        .json({ message: "Account is deactivated. Please contact support." });
     }
 
     // Check subscription status for regular users
@@ -265,7 +274,6 @@ exports.signin = async (req, res) => {
         subscriptionStatus = "expired";
       }
       
-      // Add isActive flag to current subscription
       currentSubscription.isActive = expiresAt >= today;
     }
 
@@ -274,11 +282,11 @@ exports.signin = async (req, res) => {
       userData.uploadData = bulkUpload;
     }
     
-    // Generate token with additional device info
+    // Generate token
     const token = generateToken({ 
       id: user.userId, 
       role: userData.role,
-      sessionId: new mongoose.Types.ObjectId().toString() // Unique session ID
+      sessionId: new mongoose.Types.ObjectId().toString()
     });
 
     // Get device information
@@ -292,7 +300,7 @@ exports.signin = async (req, res) => {
     user.tokens.push({ 
       token, 
       deviceInfo,
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days from now
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
     });
     
     // Update signed in status
@@ -332,9 +340,11 @@ exports.signin = async (req, res) => {
       logoutAllDevices: shouldLogoutAllDevices
     });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("Signin error:", err.message);
+    res.status(500).json({ message: "Error signing in" });
   }
 };
+
 exports.logout = async (req, res) => {
   try {
     // Get token from header or session
@@ -352,21 +362,33 @@ exports.logout = async (req, res) => {
       userId = decoded.id; // Extract userId from decoded token
     } catch (error) {
       // If token is invalid/expired, we can still consider it logged out
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
       return res.json({ message: "Logged out successfully" });
     }
 
-    // Remove the current token from tokens array
-    const user = await AuthAccount.findById(userId);
+    // FIX: Find AuthAccount by userId (which is a reference to User)
+    const authAccount = await AuthAccount.findOne({ userId: userId });
 
-    if (user) {
+    if (authAccount) {
       // Filter out the current token
-      user.tokens = user.tokens.filter((t) => t.token !== token);
-      await user.save();
+      authAccount.tokens = authAccount.tokens.filter((t) => t.token !== token);
+      // If no tokens left, update signed in status
+      if (authAccount.tokens.length === 0) {
+        authAccount.isSignedIn = false;
+        authAccount.lastSignedOut = new Date();
+      }
+      await authAccount.save();
     }
 
     // Destroy session if it exists
     if (req.session) {
-      req.session.destroy(() => {});
+      req.session.destroy((err) => {
+        if (err) {
+          console.error("Session destruction error:", err.message);
+        }
+      });
     }
 
     res.json({ message: "Logged out successfully" });
