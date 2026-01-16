@@ -65,25 +65,28 @@ exports.verifySignup = async (req, res) => {
   try {
     const { email, otp } = req.body;
 
-    //  Use shared OTP function
-    const otpRecord = await verifyOtp(email, otp);
-    const plan = await Plan.findOne({ price: 0 });
-    console.log("Free plan:", plan);
-    if (!plan) {
-      throw new Error("No free plan found");
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required" });
     }
 
-    // Set subscription duration (e.g. 30 days from now)
+    // 1️⃣ Verify OTP
+    const otpRecord = await verifyOtp(email, otp);
+    if (!otpRecord) {
+      return res.status(400).json({ message: "Invalid or expired OTP" });
+    }
 
+    // 2️⃣ Get free plan
+    const plan = await Plan.findOne({ price: 0 });
+    if (!plan) {
+      return res.status(500).json({ message: "No free plan found" });
+    }
+
+    // 3️⃣ Subscription dates
     const now = new Date();
-    const expiry = new Date();
-    expiry.setDate(now.getDate() + plan.duration);
-    // Create AuthAccount
-    const user = await AuthAccount.create({
-      email,
-      password: otpRecord.hashedPassword,
-      role: roles.USER,
-    });
+    const expiry = new Date(now);
+    expiry.setDate(expiry.getDate() + plan.duration);
+
+    // 4️⃣ Plan snapshot
     const planSnapshot = {
       id: plan._id.toString(),
       name: plan.name,
@@ -93,11 +96,10 @@ exports.verifySignup = async (req, res) => {
       features: plan.features,
     };
 
-    // Create linked user profile
+    // 5️⃣ Create User (profile)
     const userProfile = await User.create({
-      _id: user._id,
-      email: user.email,
-      role: user.role,
+      email,
+      role: roles.USER,
       fullname: otpRecord.fullname,
       company: otpRecord.company,
       jobrole: otpRecord.role,
@@ -111,25 +113,36 @@ exports.verifySignup = async (req, res) => {
       ],
     });
 
-    // Generate token
-    const token = generateToken({ id: user._id, role: roles.USER });
+    // 6️⃣ Create AuthAccount (auth)
+    const authAccount = await AuthAccount.create({
+      email,
+      password: otpRecord.hashedPassword,
+      userId: userProfile._id,
+    });
 
-    // Store token in DB
-    user.tokens = [{ token }];
-    await user.save();
+    // 7️⃣ Generate token
+    const token = generateToken({
+      id: authAccount._id,
+      role: roles.USER,
+    });
 
-    // Remove OTP record
+    authAccount.tokens = [{ token }];
+    await authAccount.save();
+
+    // 8️⃣ Remove OTP record
     await Otp.deleteOne({ email });
 
-    res.status(201).json({
+    return res.status(201).json({
       message: "Account created successfully",
       token,
       user: userProfile,
     });
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    console.error("verifySignup error:", err);
+    return res.status(400).json({ message: err.message });
   }
 };
+
 
 // Signup Step 1 - Request OTP
 exports.signupRequest = async (req, res) => {
